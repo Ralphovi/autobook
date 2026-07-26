@@ -1,0 +1,22 @@
+# typos (crate-ci/typos) — spell-check across source, comments, and docs.
+# Always-on in the gate (no docs skip): prose in docs/ is covered too.
+#
+# Keep this allowlist tight. Every entry is a deliberate exception with a stated
+# reason, added only after `typos` actually flagged it — not speculatively. The
+# German account and banking vocabulary throughout the design docs (Ausgaben,
+# Vorabpauschale, Fremdkostenpauschale, Gläubiger-ID, …) needs no entries: typos
+# does not flag it, and pre-registering words it never complains about just rots.
+
+[default.extend-words]
+# "unparseable" is a standard variant spelling and the one used consistently
+# here; typos prefers "unparsable".
+unparseable = "unparseable"
+# "mis" is the prefix in hyphenated forms this project uses deliberately —
+# "mis-book", "mis-books" — where the unhyphenated form reads badly.
+mis = "mis"
+
+[files]
+extend-exclude = [
+    "LICENSE",
+    "DCO",
+]

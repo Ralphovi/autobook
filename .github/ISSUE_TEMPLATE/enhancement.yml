@@ -1,0 +1,44 @@
+name: Enhancement request
+description: Suggest an improvement or new feature
+title: "[Enhancement]: "
+labels:
+  - enhancement
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Autobook's scope is **destination-account assignment for irregular
+        transactions**. Everything structural stays in GnuCash: where GnuCash
+        ships an assistant that does the job, Autobook detects the need and hands
+        off rather than reimplementing. Reconciliation, chart-of-accounts
+        creation, recurring bookings, and loan amortisation are already settled
+        this way.
+
+        Securities transactions and splits denominated in a currency other than
+        the account's are permanently out of scope. See
+        [proposal 0001](https://github.com/Ralphovi/autobook/blob/main/docs/design/proposals/draft/0001-gnucash-auto-booking-pipeline.md)
+        before opening — it also records alternatives already rejected, so they
+        need not be relitigated.
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should Autobook do?
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: What goes wrong today, and how often? Concrete beats hypothetical.
+    validations:
+      required: true
+
+  - type: textarea
+    id: gnucash
+    attributes:
+      label: Does GnuCash already do this?
+      description: If a GnuCash feature or assistant covers part of it, say which — a handoff may be the right answer instead.

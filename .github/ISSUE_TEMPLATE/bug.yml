@@ -1,0 +1,75 @@
+name: Bug report
+description: Report a bug or unexpected behaviour
+title: "[Bug]: "
+labels:
+  - bug
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Redact before you paste.** Bank memos carry counterparty names, IBANs,
+        creditor IDs, and employer names. Replace them with placeholders — the
+        *shape* of the problem is what we need, and a synthetic reproduction is
+        more useful to us and safer for you.
+
+        If this is a wrong or unapproved **write to a book**, or anything that
+        could leak data off the machine, use the security policy instead of this
+        form.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The command you ran and what it did. Redacted output is fine.
+      render: shell
+    validations:
+      required: true
+
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Where did it happen?
+      options:
+        - Ingest / normalisation
+        - Classification (rules)
+        - Classification (kNN)
+        - Classification (LLM)
+        - Correlation / transfer detection
+        - Staging or dedup
+        - Review file
+        - Applier (writing to the book)
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Autobook, GnuCash, Python, and OS.
+      placeholder: "autobook 0.1.0, GnuCash 5.6, Python 3.12, Fedora 42"
+    validations:
+      required: true
+
+  - type: input
+    id: backend
+    attributes:
+      label: Book backend
+      placeholder: "xml / sqlite3 / postgres / mysql"
+
+  - type: checkboxes
+    id: hygiene
+    attributes:
+      label: Before submitting
+      options:
+        - label: I have removed real counterparty names, IBANs, and account numbers from this report.
+          required: true

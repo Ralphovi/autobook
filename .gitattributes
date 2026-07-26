@@ -1,0 +1,8 @@
+# Statement fixtures and book files are byte-exact inputs to parsers and to the
+# round-trip tests. Git must never apply text or line-ending normalization to
+# them — a rewritten CRLF silently changes what a parser test is testing.
+*.ofx    binary
+*.qfx    binary
+*.mt940  binary
+*.sta    binary
+*.gnucash binary

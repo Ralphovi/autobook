@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Tooling caches
+.nox/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Editors
+.idea/
+*.swp
+
+# Claude Code local overrides (settings.json IS tracked)
+.claude/settings.local.json
+
+# ---------------------------------------------------------------------------
+# Never commit financial data. Bank memos carry counterparty names, IBANs,
+# creditor IDs, employer names, and Art. 9 special-category data. This is a
+# backstop, not the policy — the policy is in AGENTS.md and CONTRIBUTING.md.
+# ---------------------------------------------------------------------------
+*.gnucash
+*.gnucash.*
+*.gcm
+*.qif
+*.ofx
+*.qfx
+*.csv
+*.xlsx
+*.mt940
+*.sta
+*.camt*.xml
+statements/
+books/
+
+# The user's own rules and the staging store are personal data by definition.
+rules.local.*
+*.autobook.toml
+staging.sqlite*
+proposals.sqlite*
+
+# Synthetic test fixtures are the one exception, and the path has to say so —
+# `git add -f` on a real statement is then a deliberate act, not an accident.
+!tests/fixtures/synthetic/
+!tests/fixtures/synthetic/**

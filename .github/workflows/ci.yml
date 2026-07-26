@@ -1,0 +1,85 @@
+name: ci
+
+# The gate. `nox -s gate` is single-sourced in noxfile.py — this workflow runs it
+# and re-declares nothing, which is the same contract the PDCA harness
+# (Ralphovi/autobook-pdca) honours when it delegates through engine/nox.sh.
+#
+# No paths filter on the `gate` job: it always runs and always reports a status,
+# so it can serve as a required status check. A path-filtered workflow never
+# reports on PRs that miss the filter, which would leave those PRs wedged
+# "pending" forever.
+#
+# `nox -s applier` is deliberately absent. It needs the system python3-gnucash,
+# which is not installable in CI, and a gate that cannot run in CI is not a gate.
+# Applier changes are verified locally against a restored copy of a book.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Colour makes the ruff/mypy output readable in the Actions log.
+  FORCE_COLOR: "1"
+
+jobs:
+  # The required check. Runs the whole gate on the default interpreter.
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install typos
+        # The spell gate is always-on, so install it rather than letting the nox
+        # session warn-and-skip. Pinned: an unpinned linter turns an unrelated PR
+        # red on someone else's dictionary change.
+        run: |
+          curl -fsSL "https://github.com/crate-ci/typos/releases/download/v1.48.0/typos-v1.48.0-x86_64-unknown-linux-musl.tar.gz" \
+            | tar -xz -C /usr/local/bin ./typos
+          typos --version
+
+      - name: Install nox
+        # `python -m pip`, NOT pipx: pipx would install nox under the runner's
+        # default interpreter, so `nox -s gate` would run its tests on that one
+        # rather than the version selected above — a gate quietly testing an
+        # interpreter nobody chose.
+        run: python -m pip install --upgrade nox
+
+      - name: Run the gate
+        run: nox -s gate
+
+  # Full interpreter matrix for the test suite. The `gate` job above runs tests on
+  # one interpreter so that the local command stays fast; this is where the rest
+  # of the supported range is proven. Required alongside `gate`. Keep this list in
+  # step with PYTHONS in noxfile.py and requires-python in pyproject.toml.
+  test-matrix:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install nox
+        run: python -m pip install --upgrade nox
+
+      - name: Run the test suite
+        # --error-on-missing-interpreters so a missing interpreter fails loudly
+        # instead of skipping to a green run that checked nothing.
+        run: nox --error-on-missing-interpreters -s "test-${{ matrix.python-version }}"

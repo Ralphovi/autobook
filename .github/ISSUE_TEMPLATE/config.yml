@@ -1,0 +1,12 @@
+blank_issues_enabled: false
+
+contact_links:
+  - name: Security or privacy vulnerability
+    url: https://github.com/Ralphovi/autobook/security/policy
+    about: Report privately, not as a public issue. Anything that could write a wrong booking, or leak a memo, IBAN, or credential, belongs here.
+  - name: Bug in GnuCash itself
+    url: https://bugs.gnucash.org/
+    about: Autobook does not reimplement GnuCash features. Bugs in GnuCash, its Python bindings, or its assistants go to the GnuCash project.
+  - name: Bug in statement parsing
+    url: https://github.com/kedder/ofxstatement
+    about: Statement formats are handled by ofxstatement plugins. If the amounts, dates, or FITIDs are wrong before Autobook sees them, the plugin is the place.

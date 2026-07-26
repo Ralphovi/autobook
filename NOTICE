@@ -1,0 +1,14 @@
+Autobook
+Copyright 2026 The Autobook Authors
+
+This product includes software developed by the Autobook project
+(https://github.com/Ralphovi/autobook).
+
+Licensed under the GNU General Public License, version 3 or (at your option) any
+later version. A copy of the License is in the LICENSE file at the root of this
+repository.
+
+The applier component links libgnucash, which is licensed under the GNU General
+Public License, version 2 or (at your option) any later version. Autobook
+exercises that "or later" option and is distributed as GPL-3.0-or-later. See
+docs/design/adr/0002-gpl-license-and-dco.md for the reasoning.
