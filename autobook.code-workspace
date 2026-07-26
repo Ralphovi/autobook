@@ -1,0 +1,23 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../autobook-pdca"
+		},
+		{
+			"path": "../ofxstatement-consorsbank"
+		},
+		{
+			"path": "../ofxstatement-revolut"
+		},
+		{
+			"path": "../ofxstatement-scalable"
+		},
+		{
+			"path": "../ofxstatement-testbed"
+		}
+	],
+	"settings": {}
+}
