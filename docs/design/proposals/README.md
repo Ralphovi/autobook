@@ -18,6 +18,7 @@ Start one from [`../templates/proposal.md`](../templates/proposal.md).
 | # | Title | Tracking |
 |---|-------|----------|
 | [0001](draft/0001-gnucash-auto-booking-pipeline.md) | GnuCash auto-booking pipeline | — |
+| [0002](draft/0002-document-driven-booking-via-paperless.md) | Document-driven booking — statements and bills from paperless-ngx | — |
 
 ## Accepted
 
