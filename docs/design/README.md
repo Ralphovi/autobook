@@ -45,7 +45,9 @@ How design change flows. A proposal carries motivation, design, alternatives, an
 graduation criteria, and moves from `draft/` to `accepted/`. Modelled on
 Kubernetes KEPs and Rust RFCs, kept deliberately lightweight.
 
-The whole system design is [proposal 0001](proposals/draft/0001-gnucash-auto-booking-pipeline.md).
+The whole system design is [proposal 0001](proposals/draft/0001-gnucash-auto-booking-pipeline.md),
+amended by [proposal 0002](proposals/draft/0002-document-driven-booking-via-paperless.md)
+(statements and bills from paperless-ngx).
 
 Start one from [`templates/proposal.md`](templates/proposal.md).
 
@@ -56,8 +58,9 @@ The living description of the system as it currently is — trimmed
 code. "Update the architecture doc" is a legitimate merge requirement on a PR
 that changes structure, not a follow-up.
 
-It is currently empty: there is no implemented system to describe. Proposal 0001
-is the design until then.
+Until the first code lands it describes the system as designed in proposals 0001
+and 0002, and says so in every section; from then on it follows the code. See
+the [architecture index](architecture/README.md) for why this changed.
 
 Start a section from [`templates/architecture.md`](templates/architecture.md).
 
@@ -77,9 +80,14 @@ Start a section from [`templates/architecture.md`](templates/architecture.md).
 
 ## Reading order
 
-1. [Proposal 0001](proposals/draft/0001-gnucash-auto-booking-pipeline.md) — the
-   design: scope, architecture, the classification cascade, and the build order.
-2. [ADR-0002](adr/0002-gpl-license-and-dco.md) — licensing and contribution
+1. [`architecture/01-introduction-and-goals.md`](architecture/01-introduction-and-goals.md)
+   — what this is, the guarantee, the quality goals.
+2. [`architecture/05-building-block-view.md`](architecture/05-building-block-view.md)
+   — the processes, components and contracts.
+3. [Proposal 0001](proposals/draft/0001-gnucash-auto-booking-pipeline.md) and
+   [proposal 0002](proposals/draft/0002-document-driven-booking-via-paperless.md)
+   — the full reasoning, alternatives and build order.
+4. [ADR-0002](adr/0002-gpl-license-and-dco.md) — licensing and contribution
    provenance.
-3. [`AGENTS.md`](../../AGENTS.md) — the rules that bind anyone, human or agent,
+5. [`AGENTS.md`](../../AGENTS.md) — the rules that bind anyone, human or agent,
    writing code here.
