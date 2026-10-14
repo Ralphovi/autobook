@@ -1,0 +1,36 @@
+%% Runtime — one interactive booking run (section 6.1)
+%% Diagrams as code. Render with any Mermaid renderer.
+sequenceDiagram
+    actor U as User
+    participant L as Launcher
+    participant P as Pipeline
+    participant PL as paperless-ngx
+    participant S as Staging
+    participant B as Book process
+    participant G as GnuCash desktop
+
+    U->>L: start (instead of gnucash)
+    L->>L: backup book (file backends)
+    L->>B: export corpus, CoA, existing (READ_ONLY)
+    B-->>P: JSON
+    L->>P: run
+    P->>PL: list new statements, fetch originals
+    P->>P: parse, balance check, normalise, dedup, correlate
+    P->>PL: bill metadata for the batch window
+    P->>P: link bills, classify, disposition, batch gate
+    P->>S: stage proposals
+    alt batch gate refuses
+        P-->>L: refusal
+        L->>U: notify
+    else rows to review
+        L->>U: open review file in $EDITOR
+        U-->>L: saved
+        L->>P: strict parse by ID
+        P->>S: approve / correct / reject
+        L->>B: apply approved rows (NORMAL_OPEN)
+        B->>B: drop rows whose ID is already a num
+        B->>B: create / split / match_existing, set doc link
+        B->>B: post-apply assertions
+        B-->>S: proposal_id, tx_guid, status
+    end
+    L->>G: exec gnucash (always)

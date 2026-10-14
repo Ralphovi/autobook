@@ -1,0 +1,44 @@
+%% C4 Level 2 — Containers and their components
+%% Diagrams as code. Render with any Mermaid renderer.
+graph TB
+    subgraph launcher["Launcher (shell wrapper)"]
+        L["backup → pipeline → $EDITOR → book process → assert → exec gnucash"]
+    end
+
+    subgraph pipeline["Pipeline process — venv, never imports gnucash"]
+        src["Statement source<br/>paperless | files"]
+        plug["ofxstatement plugins"]
+        norm["Normaliser<br/>(profile per source account)"]
+        dedup["Admission & dedup<br/>(FITID | checksum+ordinal, balance check)"]
+        corr["Correlator<br/>(transfers, PayPal funding)"]
+        docs["Bill matcher<br/>(exact amount, batch-wide)"]
+        cls["Classifier<br/>rules → kNN → LLM"]
+        adapter["Model adapter<br/>(redaction boundary)"]
+        disp["Disposition<br/>create · create_split · match_existing · out_of_scope · queue"]
+        gate["Batch gate<br/>(drift, version tuple)"]
+        review["Review file<br/>generate / strict parse"]
+        trial["Trial tooling<br/>backtest · rule builder · assistant detector"]
+        staging[("Staging store<br/>SQLite | PostgreSQL")]
+    end
+
+    subgraph book["Book process — system Python, links libgnucash"]
+        session["Session manager<br/>(NORMAL_OPEN | READ_ONLY, end in finally)"]
+        export["Exporter<br/>corpus · CoA · num IDs"]
+        apply["Applier<br/>create · split · match_existing · doc link"]
+        assert["Post-apply assertions<br/>(engine API)"]
+    end
+
+    src --> plug --> norm --> dedup --> corr --> docs --> cls --> disp --> gate --> staging
+    cls --> adapter
+    staging --> review
+    review --> staging
+    trial --> staging
+    export -->|"JSON"| trial
+    export -->|"JSON"| cls
+    staging -->|"JSON: approved rows"| apply
+    apply -->|"JSON: proposal_id, tx_guid, status"| staging
+    session --- export
+    session --- apply
+    session --- assert
+    L --> pipeline
+    L --> book

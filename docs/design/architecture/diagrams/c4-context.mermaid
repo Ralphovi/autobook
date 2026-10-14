@@ -1,0 +1,30 @@
+%% C4 Level 1 — System context
+%% Diagrams as code. Render with any Mermaid renderer.
+graph TB
+    user["User<br/>(books in GnuCash, reviews in $EDITOR)"]
+
+    subgraph autobook["Autobook"]
+        sys["Pipeline + Book process + Launcher"]
+    end
+
+    paperless["paperless-ngx<br/>statements and bills"]
+    files["Statement files<br/>(fallback, no paperless)"]
+    plugins["ofxstatement plugins<br/>(per bank)"]
+    book["GnuCash book<br/>(XML / SQLite / MySQL / PostgreSQL)"]
+    gui["GnuCash desktop"]
+    model["Model backend<br/>(optional, OpenAI-compatible)"]
+    secrets["Secret Service<br/>(libsecret)"]
+    notify["Notifier<br/>(e.g. ntfy)"]
+    packs["Rule-pack repository<br/>(separate, versioned)"]
+
+    user -->|"runs launcher, edits review file"| sys
+    sys -->|"REST, read; optional stamp"| paperless
+    sys -->|"reads"| files
+    sys -->|"in-process parse"| plugins
+    sys -->|"libgnucash engine API"| book
+    sys -->|"exec after run"| gui
+    gui -->|"opens"| book
+    sys -->|"redacted token, amount, sign"| model
+    sys -->|"tokens, API keys"| secrets
+    sys -->|"failures, refusals"| notify
+    packs -->|"pattern → category data"| sys
