@@ -1,0 +1,39 @@
+name: testenv
+
+# Book-process tests (GnuCash 5.14 bindings, XML and PostgreSQL books) and
+# live-paperless tests (paperless-ngx 3.3.0), in the throwaway Docker test
+# environment — the same stack `nox -s applier` / `nox -s live` and the PDCA driver
+# use. Synthetic data only; the stack's network has no outbound access.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testenv-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  testenv:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Start and seed the test environment
+        run: testenv/run up
+
+      - name: Book-process and paperless tests
+        run: testenv/run test
+
+      - name: Service logs on failure
+        if: failure()
+        run: docker compose -f testenv/compose.yaml -p autobook-testenv logs --tail 200
+
+      - name: Tear down
+        if: always()
+        run: testenv/run down

@@ -77,10 +77,11 @@ def types(session: nox.Session) -> None:
 
 @nox.session(python=PYTHONS)
 def test(session: nox.Session) -> None:
-    """Run the test suite. Excludes book-process tests — they need system GnuCash."""
+    """Run the test suite. Excludes book-process and live-paperless tests — they run
+    in the test environment (`nox -s applier`, `nox -s live`)."""
     session.install(*TEST_DEPS)
     session.install("-e", ".")
-    session.run("pytest", "-m", "not applier", *session.posargs)
+    session.run("pytest", "-m", "not applier and not live_paperless", *session.posargs)
 
 
 @nox.session(python=None, venv_backend="none")
@@ -102,26 +103,36 @@ def docs(session: nox.Session) -> None:
     session.run("python3", "docs/tools/lint_docs.py", external=True)
 
 
-@nox.session(
-    python=None,
-    venv_params=["--system-site-packages"],
-)
-def applier(session: nox.Session) -> None:
-    """Book-process tests. The ONLY session permitted to see python3-gnucash.
+def _testenv(session: nox.Session, marker: str) -> None:
+    """Run tests marked ``marker`` inside the throwaway test environment (testenv/).
 
-    The name predates the exporter: it runs every test marked `applier`, which
-    covers the whole book process — the read-only exporter and the applier.
-    Not part of `gate` and not run in CI, which has no GnuCash installed. Run it
-    locally against a RESTORED COPY of a book, never a real one.
+    Synthetic data only: the stack builds its own books and seeds its own paperless-ngx,
+    on an internal network with no host ports. `testenv/run down` throws it away.
     """
-    session.install(*TEST_DEPS)
-    session.install("-e", ".")
-    session.run(
-        "python",
-        "-c",
-        "import gnucash; print('gnucash bindings:', gnucash.__file__)",
-    )
-    session.run("pytest", "-m", "applier", *session.posargs)
+    if shutil.which("docker") is None:
+        session.error(
+            "SKIPPED is not an option here: these tests need Docker (testenv/README.md)."
+        )
+    session.run("testenv/run", "up", external=True)
+    session.run("testenv/run", "test", "-m", marker, *session.posargs, external=True)
+
+
+@nox.session(python=None, venv_backend="none")
+def applier(session: nox.Session) -> None:
+    """Book-process tests (GnuCash 5.14 bindings), in the test environment.
+
+    The name predates the exporter: it runs every test marked `applier`, which covers
+    the whole book process — the read-only exporter and the applier. They run against
+    synthetic books the tests build, never against a real one; a real book stays a
+    human-only, restored-copy activity (AGENTS.md).
+    """
+    _testenv(session, "applier")
+
+
+@nox.session(python=None, venv_backend="none")
+def live(session: nox.Session) -> None:
+    """Tests against a live paperless-ngx (3.3.0), in the test environment."""
+    _testenv(session, "live_paperless")
 
 
 @nox.session(python=None, venv_backend="none")

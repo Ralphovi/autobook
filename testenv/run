@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Autobook's throwaway test environment (testenv/README.md). Synthetic data only.
+#
+#   testenv/run up              build, start and seed (idempotent; waits until ready)
+#   testenv/run test [pytest…]  run pytest inside the `book` container (-m "applier or live_paperless" unless given)
+#   testenv/run down            stop and delete everything, volumes included
+#   testenv/run shell           a shell in the `book` container
+#
+# AUTOBOOK_TESTENV_PROJECT names the compose project, so several copies can run side by
+# side (the PDCA lanes do). AUTOBOOK_SRC is the source tree mounted read-only at /src
+# (default: this checkout; the PDCA driver passes its per-cycle worktree).
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export AUTOBOOK_SRC="${AUTOBOOK_SRC:-$(cd "$here/.." && pwd)}"
+compose=(docker compose -f "$here/compose.yaml" -p "${AUTOBOOK_TESTENV_PROJECT:-autobook-testenv}")
+
+case "${1:-}" in
+  up)
+    "${compose[@]}" build -q book
+    "${compose[@]}" up -d --wait book bookdb paperless
+    "${compose[@]}" run --rm seed
+    ;;
+  test)
+    shift
+    # Keep the marker filter unless the caller chose one: the pipeline tests assert that
+    # `gnucash` is never imported, which only holds in a process without book tests.
+    case " $* " in *" -m "*) ;; *) set -- -m "applier or live_paperless" "$@" ;; esac
+    "${compose[@]}" exec -T book \
+      python3 -m pytest -p no:cacheprovider -o addopts="-ra --strict-markers" "$@"
+    ;;
+  down)
+    "${compose[@]}" down -v --remove-orphans
+    ;;
+  shell)
+    "${compose[@]}" exec book bash
+    ;;
+  *)
+    sed -n '2,12p' "${BASH_SOURCE[0]}"; exit 2
+    ;;
+esac

@@ -108,12 +108,14 @@ opening a pull request. Individual sessions:
 
 ```bash
 nox -s fmt lint types test typos docs
-nox -s applier    # book-process tests; needs system python3-gnucash
+nox -s applier    # book-process tests, in the Docker test environment (testenv/)
+nox -s live       # paperless-ngx tests, same environment
 ```
 
 The `applier` session (named before the book process had an exporter; it runs
-all book-process tests) is the only one that may see `python3-gnucash`; every
-other session runs in a clean virtualenv, which is how the pipeline's
+all book-process tests) is the only one that sees `python3-gnucash`, inside the
+test environment's `book` container; every other session runs in a clean
+virtualenv, which is how the pipeline's
 independence from libgnucash stays true rather than aspirational.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the pull-request requirements (a

@@ -47,12 +47,17 @@ there because the failure it prevents is invisible.
   single-sourced gate: formatting, lint, types, tests, spelling, and the docs
   lint. It is the same command CI runs and the same command the PDCA (Plan-Do-Check-Act) harness
   delegates to; never re-declare gates elsewhere.
-- **Book-process tests (`nox -s applier`)** — separate because it is the only
-  session permitted to see the system `python3-gnucash`. It is not part of
-  `gate` and does not run in CI (no GnuCash there); run it locally when you
-  touch the book process (exporter or applier), against a **restored copy of a
-  book, never a real one**. The session and the pytest marker keep the name
-  `applier`, but they cover every book-process test, the exporter's included.
+- **Book-process tests (`nox -s applier`) and live-paperless tests (`nox -s live`)**
+  — run inside the throwaway **test environment** (`testenv/`, Docker): GnuCash
+  5.14 bindings, PostgreSQL and paperless-ngx 3.3.0 on an internal network with
+  no outbound access. They are not part of `gate`; CI runs them in the
+  `testenv` workflow. The session and the pytest marker keep the name `applier`,
+  but they cover every book-process test, the exporter's included.
+- **Unattended book-process runs only touch synthetic books (MUST).** CI and the
+  PDCA driver may run book-process and paperless tests **only** in the test
+  environment, against books the tests build and the documents `testenv/seed/`
+  creates. A real book, or a restored copy of one, is opened only by a human,
+  attended — and never mounted into the test environment.
 
 If a tool the gate needs is not installed, the session warns and skips. Never
 report a skipped step as having run.

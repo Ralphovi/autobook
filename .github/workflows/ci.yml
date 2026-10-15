@@ -9,9 +9,8 @@ name: ci
 # reports on PRs that miss the filter, which would leave those PRs wedged
 # "pending" forever.
 #
-# `nox -s applier` is deliberately absent. It needs the system python3-gnucash,
-# which is not installable in CI, and a gate that cannot run in CI is not a gate.
-# Applier changes are verified locally against a restored copy of a book.
+# Book-process and paperless tests run in the separate `testenv` workflow, inside
+# the Docker test environment (testenv/), against synthetic books and documents.
 
 on:
   push:

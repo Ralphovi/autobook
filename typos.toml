@@ -14,6 +14,12 @@ unparseable = "unparseable"
 # "mis" is the prefix in hyphenated forms this project uses deliberately —
 # "mis-book", "mis-books" — where the unhyphenated form reads badly.
 mis = "mis"
+# German words in the synthetic statements and documents the test environment seeds
+# (testenv/seed/, tests/book/): month names and paperless wording.
+januar = "januar"
+februar = "februar"
+dokument = "dokument"
+alle = "alle"
 
 [files]
 extend-exclude = [
