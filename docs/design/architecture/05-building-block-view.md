@@ -15,13 +15,14 @@ tags:
 ### Package layout
 
 All under `src/autobook/`, one module per building block. Each stub module sets
-`__all__` to the one name of its entry point.
+`__all__` to the one name of its entry point; a block that has been built
+(`normaliser`) exports its real API instead.
 
 | Path | Block |
 |------|-------|
 | `contracts.py` | The versioned JSON contracts (section 5.1). Standard library only. |
 | `staging.py` | The staging store (section 5.1). Its own top-level block, because both processes use it. Standard library only. |
-| `pipeline/` | `statement_source`, `admission`, `normaliser`, `correlator`, `bill_matcher`, `classifier`, `model_adapter`, `disposition`, `batch_gate`, `review_file`, `trial` (section 5.2). Never imports `gnucash`. |
+| `pipeline/` | `statement_source`, `admission`, `normaliser`, `correlator`, `bill_matcher`, `classifier`, `model_adapter`, `disposition`, `batch_gate`, `review_file`, `trial` (section 5.2). Never imports `gnucash`. `pipeline/profiles/` is package data, not a block: the normaliser's shipped profiles. |
 | `book/` | `session`, `exporter`, `applier`, `readback`, `assertions`, `undo` (section 5.3). The only package that may import `gnucash`, per file, as each module needs it. |
 
 The launcher (section 5.4) is a shell script, not a Python module. `import
@@ -131,11 +132,140 @@ settled part of this design.
 
 ### Normaliser
 
-Strips SEPA boilerplate (`EREF+`, `MREF+`, `CRED+`, `SVWZ+`, `ABWA+`), dates, card
-fragments and sequence numbers until the merchant token remains. **Profiles are
-per source account**, loaded from the installed package and from a user
-directory, so a new bank or country does not need a release. The normaliser
-version is part of the version gate tuple.
+Strips the noise from a raw memo (SEPA tags and references, dates, card fragments,
+sequence numbers) until the merchant token remains. It is the only place that
+normalises a memo (section 8.4). **Profiles are per source account**, loaded from
+the installed package and from a user directory, so a new bank or country does not
+need a release. The normaliser version is part of the version gate tuple.
+
+Implemented in `autobook.pipeline.normaliser`:
+
+- `load(user_dir=None)` reads the package profiles and the user directory once and
+  returns a `Normaliser`; `None` means the default user directory (below). Every bad
+  input raises `NormaliserError` (a `ValueError`) naming the file or directory and
+  what is wrong; nothing falls back silently. Error messages never carry a memo.
+- `Normaliser.normalise(raw_memo, source_account)` returns a `NormalisedMemo` with
+  `raw_memo` (unchanged), `token`, `profile` (the profile used for the account) and
+  `version`. `source_account` is a tuple of path components, as in the contracts.
+  Neither the memo nor the token appears in the `repr`, so a logged result carries
+  no memo (section 8.5).
+- `Normaliser.version` is the normaliser version (below); `NORMALISER_VERSION` is
+  the code's part of it.
+
+**Profiles.** A profile is a named, ordered list of rules. Each rule is a Python
+regular expression whose matches are removed (replaced by a space). The name is the
+file name without `.toml`. Users write these files by hand, so the layout is a
+compatibility promise:
+
+```toml
+# <name>.toml
+extends = "default"     # optional
+
+[[rules]]
+pattern = '\bKARTE \d+'
+
+[[rules]]
+pattern = '\bREF \d+'
+```
+
+- The top-level keys are `rules`, an array of tables, and the optional `extends`, a
+  profile name. A file with no `[[rules]]` is a profile with no rules of its own.
+  Each rule has exactly one key, `pattern`, a string. Any other key, a value of the
+  wrong type or a pattern that does not compile is an error, so a typo never
+  becomes a rule that silently does nothing.
+- Patterns match regardless of case (`re.IGNORECASE`). TOML literal strings
+  (`'…'`) keep backslashes as written.
+- A profile's effective rules are its own rules in file order, followed by the
+  effective rules of the profile it `extends`. `extends` is resolved after the
+  user's overrides (below), so a user `default.toml` also changes every profile that
+  extends `default`, `sepa` included. Chains are allowed; an unknown name or a cycle
+  is an error.
+
+To normalise a memo: upper-case it, apply the effective rules in order, collapse
+runs of whitespace to one space and strip both ends. The token may be empty when
+the memo is all noise. The raw memo is never changed or discarded: it is returned in
+`NormalisedMemo.raw_memo` and stays the stored form in the corpus.
+
+Two profiles ship in the package, in `src/autobook/pipeline/profiles/`:
+
+- `default` strips noise in general form, in this order: the `SAGT DANKE`
+  boilerplate; card fragments (`KARTE <digits>`); reference fragments
+  (`REF <digits>`, `NR. <digits>`, `NR.<digits>`); ISO dates with an optional time
+  (`2025-03-05T10:11:12`); clock times (`10:11`, `10:11:12`); day-month dates
+  (`DD.MM.`, `DD.MM.YYYY`); month-year (`01.2025`); standalone digit runs; and
+  whitespace-delimited fragments made only of punctuation. The date and time rules
+  run before the digit-run rule. Digits inside a word, as in a creditor ID, and
+  multi-word merchant names survive.
+- `sepa` extends `default` with the structured-purpose tags of the German MT940
+  field 86 and the CAMT export. The full tag set is `EREF+` `KREF+` `MREF+` `CRED+`
+  `DEBT+` `COAM+` `OAMT+` `SVWZ+` `ABWA+` `ABWE+` `IBAN+` `BIC+` `BREF+` `RREF+`
+  `PURP+`. Every tag of the set ends the value of the tag before it, and a tag is
+  found with no word boundary in front, because some exports glue the fields
+  (`EREF+NOTPROVIDEDSVWZ+…`). Each tag is handled one of two ways:
+
+| Tags | Handling | Why |
+|------|----------|-----|
+| `SVWZ+`, `CRED+`, `ABWA+`, `ABWE+` | The tag is removed and the value kept; the `default` rules then clean it | They tell merchants apart: the purpose text, the creditor ID (a registered business identifier, allowed in shareable data by section 8.5), the ultimate debtor and the ultimate creditor (the real payee when a provider pays on a merchant's behalf) |
+| `EREF+`, `KREF+`, `MREF+`, `DEBT+`, `COAM+`, `OAMT+`, `IBAN+`, `BIC+`, `BREF+`, `RREF+`, `PURP+` | The tag and its value are removed, up to the next tag of the set or the end | References and amounts change from one payment to the next. An IBAN must never reach the model adapter (section 8.5) and may belong to a person, and so may the originator ID after `DEBT+`. A BIC names a bank, not a merchant |
+
+Known limit, on purpose: a value kept from `ABWA+`/`ABWE+`, and the `SVWZ+` text,
+can be a person's name, and an IBAN the sender typed into the `SVWZ+` text is not
+removed (a rule for any IBAN-shaped text would also remove creditor IDs, which have
+the same shape). The guard is the adapter boundary (section 8.5): a remote backend
+receives a token only if it matches a pack entry or the user's allowlist.
+
+**User directory.** `$XDG_CONFIG_HOME/autobook/normaliser/`, or
+`~/.config/autobook/normaliser/` when `XDG_CONFIG_HOME` is unset, empty or not an
+absolute path (section 8.8). A directory that does not exist means package profiles
+only and no mapping. `load` reads the top level only:
+
+- An entry whose name ends in exactly `.toml` (lower case) and does not start with
+  `.` is a profile file, or the mapping file `accounts.toml`. It must be a regular
+  file or a symlink to one. Every other entry is ignored and does not enter the
+  version: subdirectories, dotfiles, editor backups (`sepa.toml~`, `sepa.toml.bak`),
+  other suffixes (`SEPA.TOML`), notes. A user directory that cannot be listed, a
+  user directory path that is a dangling symlink, and one that is a file are errors.
+- A `<name>.toml` replaces the package profile of the same name entirely; there is
+  no merge. A new name adds a profile. Names are case-sensitive: `Default.toml` adds
+  a profile `Default`. To change only the accounts mapped to `sepa`, override `sepa`.
+- A user profile must be used: one that replaces no package profile, is named by no
+  `accounts.toml` entry and is extended by no profile is an error. This catches
+  `defualt.toml`, which would otherwise sit unused while the package `default` keeps
+  applying.
+- `accounts` is reserved for the mapping file. It maps source accounts to profiles,
+  each account a list of path components, never a separator-joined string
+  (section 5.1):
+
+```toml
+# accounts.toml
+[[accounts]]
+path = ["Aktiva", "Girokonto"]
+profile = "sepa"
+```
+
+The only top-level key is `accounts`, an array of tables; each entry has exactly
+`path` (a non-empty array of non-empty strings) and `profile`. A profile that does
+not exist, or an account mapped twice, is an error. An account with no mapping uses
+`default`; the package maps no account.
+
+**Version.** `Normaliser.version` is `"<NORMALISER_VERSION>-<12 hex digits>"`.
+`NORMALISER_VERSION` is the code's algorithm version, bumped when the code (not a
+profile) changes what a token looks like. The hex digits start a SHA-256 digest
+over the effective rules of every profile, the account mapping and the interpreter's
+Unicode database version: `str.upper()` and the regex classes `\d`, `\b`, `\s`
+follow the Unicode database, and CI runs Python 3.11 to 3.14, which ship different
+versions. The digest is taken over a canonical form, sorted by profile name and
+account path, holding no file path, other file name or timestamp. So the same files
+give the same version from any directory, and one changed rule, mapping line or
+Unicode version gives a new one.
+
+The version is global on purpose: a change for one account changes it for every
+account. That costs nothing extra, because the kNN index is rebuilt whole every run
+(proposal 0001); the cost is a backtest re-run, which is what the version gate
+forces. This string, not `NORMALISER_VERSION` alone, is the normaliser version that
+is recorded with every vector, in the version tuple (section 8.3) and in the
+`normaliser_version` staging column; the integer alone would miss a user's profile
+edit (section 8.8).
 
 ### Correlator
 

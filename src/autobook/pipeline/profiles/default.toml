@@ -1,0 +1,50 @@
+# The `default` profile: noise any bank memo can carry, written in general form.
+#
+# Every source account that the user's accounts.toml does not map to another profile
+# uses it, and `sepa` extends it. A file of the same name in the user directory
+# replaces it entirely. Format, override and version rules:
+# docs/design/architecture/05-building-block-view.md, section 5.2.
+#
+# Each rule is a Python regular expression, matched regardless of case against the
+# upper-cased memo; every match is replaced by a space, in order, and runs of
+# whitespace are then collapsed. The order matters: the date and time rules (4-7) run
+# before the digit-run rule (8), which would otherwise leave `- -05T10: :` behind.
+
+# 1. The "sagt danke" boilerplate.
+[[rules]]
+pattern = '\bSAGT\s+DANKE\b'
+
+# 2. Card fragments: KARTE 1234.
+[[rules]]
+pattern = '\bKARTE\s+\d+\b'
+
+# 3. Reference fragments: REF 1234, NR. 1234, NR.1234.
+[[rules]]
+pattern = '\b(?:REF\s+|NR\.\s*)\d+\b'
+
+# 4. ISO dates, with an optional time: 2025-03-05, 2025-03-05T10:11, 2025-03-05T10:11:12.
+[[rules]]
+pattern = '\b\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2})?)?\b'
+
+# 5. Clock times: 10:11, 10:11:12.
+[[rules]]
+pattern = '\b\d{1,2}:\d{2}(?::\d{2})?\b'
+
+# 6. Day-month dates, with an optional year: 05.03., 05.03.2025.
+[[rules]]
+pattern = '\b\d{1,2}\.\d{1,2}\.(?:\d{4}\b)?'
+
+# 7. Month-year: 01.2025.
+[[rules]]
+pattern = '\b\d{1,2}\.\d{4}\b'
+
+# 8. Standalone digit runs, such as sequence numbers. Digits inside a word, as in a
+#    creditor ID, are kept.
+[[rules]]
+pattern = '\b\d+\b'
+
+# 9. Whitespace-delimited fragments made only of punctuation, such as the ` . ` or
+#    ` - ` the rules above leave behind. A fragment with a letter or a digit in it
+#    (`//MUENCHEN/DE`) is kept.
+[[rules]]
+pattern = '(?<!\S)[^\w\s]+(?!\S)'

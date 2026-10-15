@@ -1,0 +1,27 @@
+# The `sepa` profile: memos carrying SEPA structured-purpose tags (German MT940
+# field 86, CAMT export), then everything `default` strips.
+#
+# The package maps no account to it; the user's accounts.toml does. Format, override
+# and version rules: docs/design/architecture/05-building-block-view.md, section 5.2.
+#
+# The full tag set:
+#   EREF+ KREF+ MREF+ CRED+ DEBT+ COAM+ OAMT+ SVWZ+ ABWA+ ABWE+ IBAN+ BIC+ BREF+ RREF+ PURP+
+# Every tag of the set ends the value of the tag before it. A tag is found with no
+# word boundary in front, because some exports glue the fields: EREF+NOTPROVIDEDSVWZ+...
+
+extends = "default"
+
+# 1. Dropped tags, removed with their value up to the next tag of the full set or the
+#    end: EREF+ KREF+ MREF+ DEBT+ COAM+ OAMT+ IBAN+ BIC+ BREF+ RREF+ PURP+.
+#    References and amounts change from one payment to the next. An IBAN must never
+#    reach the model adapter and may belong to a person, and so may the originator ID
+#    after DEBT+. A BIC names a bank, not a merchant. (?s) lets a value span a line
+#    break.
+[[rules]]
+pattern = '(?s)(?:EREF|KREF|MREF|DEBT|COAM|OAMT|IBAN|BIC|BREF|RREF|PURP)\+.*?(?=(?:EREF|KREF|MREF|CRED|DEBT|COAM|OAMT|SVWZ|ABWA|ABWE|IBAN|BIC|BREF|RREF|PURP)\+|\Z)'
+
+# 2. Kept tags: SVWZ+ CRED+ ABWA+ ABWE+. The tag is removed and its value stays (the
+#    `default` rules then clean it), because the value tells merchants apart: the
+#    purpose text, the creditor ID, the ultimate debtor, the ultimate creditor.
+[[rules]]
+pattern = '(?:SVWZ|CRED|ABWA|ABWE)\+'

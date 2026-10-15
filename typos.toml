@@ -7,6 +7,13 @@
 # Vorabpauschale, Fremdkostenpauschale, Gläubiger-ID, …) needs no entries: typos
 # does not flag it, and pre-registering words it never complains about just rots.
 
+[default]
+# Misspelt on purpose, and matched as the whole file name so the same misspelling
+# anywhere else is still caught: `defualt.toml` is the normaliser's example of a
+# mistyped profile name that `load` must reject (src/autobook/pipeline/normaliser.py,
+# tests/test_normaliser.py, architecture chapter 5).
+extend-ignore-re = ['defualt\.toml']
+
 [default.extend-words]
 # "unparseable" is a standard variant spelling and the one used consistently
 # here; typos prefers "unparsable".
