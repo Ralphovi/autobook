@@ -10,11 +10,11 @@ sequenceDiagram
     participant G as GnuCash desktop
 
     U->>L: start (instead of gnucash)
-    L->>L: backup book (file backends)
-    L->>B: export corpus, CoA, existing (READ_ONLY)
+    L->>L: backup book (file copy, or pg_dump)
+    L->>B: export corpus, CoA, existing, SX definitions (READ_ONLY)
     B-->>P: JSON
     L->>P: run
-    P->>PL: list new statements, fetch originals
+    P->>PL: list new statements, fetch originals (?version=)
     P->>P: parse, balance check, normalise, dedup, correlate
     P->>PL: bill metadata for the batch window
     P->>P: link bills, classify, disposition, batch gate
@@ -23,14 +23,18 @@ sequenceDiagram
         P-->>L: refusal
         L->>U: notify
     else rows to review
-        L->>U: open review file in $EDITOR
-        U-->>L: saved
+        L->>U: open review file in $EDITOR (gated rows pre-marked a)
+        U-->>L: saved = approval of rows marked a
         L->>P: strict parse by ID
         P->>S: approve / correct / reject
+        Note over L,B: until build step 5 the run stops here: decisions recorded, nothing written
         L->>B: apply approved rows (NORMAL_OPEN)
         B->>B: drop rows whose ID is already a num
         B->>B: create / split / match_existing, set doc link
+        B->>B: session.save()
         B->>B: post-apply assertions
+        B->>B: read-back confirms each row
         B-->>S: proposal_id, tx_guid, status
+        L->>L: remove review file
     end
     L->>G: exec gnucash (always)

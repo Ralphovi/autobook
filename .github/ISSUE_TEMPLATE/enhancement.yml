@@ -16,10 +16,14 @@ body:
         this way.
 
         Securities transactions and splits denominated in a currency other than
-        the account's are permanently out of scope. See
+        the account's are permanently out of scope. The design is
         [proposal 0001](https://github.com/Ralphovi/autobook/blob/main/docs/design/proposals/draft/0001-gnucash-auto-booking-pipeline.md)
-        before opening — it also records alternatives already rejected, so they
-        need not be relitigated.
+        as amended by
+        [proposal 0002](https://github.com/Ralphovi/autobook/blob/main/docs/design/proposals/draft/0002-document-driven-booking-via-paperless.md),
+        described in
+        [docs/design/architecture/](https://github.com/Ralphovi/autobook/tree/main/docs/design/architecture).
+        Read them before opening — the proposals also record alternatives already
+        rejected, so they need not be relitigated.
 
   - type: textarea
     id: proposal

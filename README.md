@@ -2,46 +2,62 @@
 
 Automatic destination-account assignment for GnuCash bank imports.
 
-Autobook classifies imported bank transactions so that booking requires no
-per-transaction interaction with GnuCash's import UI. The target is that
-~90–95% of transactions book unattended; the residual is reviewed in a plain
-text file rather than in GnuCash's matcher.
+Autobook classifies imported bank transactions so that booking takes one save
+of a pre-filled review file instead of per-transaction work in GnuCash's import
+UI. Rows Autobook is confident about arrive pre-marked for acceptance, the rest
+are left for a decision, and saving the file is the approval. The target is
+that ~90–95% of transactions arrive pre-marked; the residual is decided in that
+plain text file rather than in GnuCash's matcher.
 
-The residual is not a modelling failure. It is genuinely ambiguous data — was
-that Amazon order household or a gift? — which a bank statement does not contain
-the information to resolve.
+The residual is not a modelling failure. It is ambiguous *given the statement
+alone* — was that Amazon order household or a gift? When the matching bill is
+in [paperless-ngx](https://docs.paperless-ngx.com/), it can resolve part of
+that; the rest stays with the user.
 
 > **Status: design.** No implementation yet. The design is
-> [proposal 0001](docs/design/proposals/draft/0001-gnucash-auto-booking-pipeline.md);
-> read that first. This repository currently holds governance, documentation
-> structure, and the gate harness.
+> [proposal 0001](docs/design/proposals/draft/0001-gnucash-auto-booking-pipeline.md)
+> as amended by
+> [proposal 0002](docs/design/proposals/draft/0002-document-driven-booking-via-paperless.md),
+> described in [`docs/design/architecture/`](docs/design/architecture/README.md).
+> This repository currently holds governance, documentation structure, and the
+> gate harness.
 
 ## How it works
 
 Two processes with a JSON contract between them:
 
 ```
-┌─ PIPELINE ──────────────────────────────────────────────┐
-│  no libgnucash · no book lock · runs anywhere            │
-│                                                          │
-│  ofxstatement → normalise → dedup (FITID) → classify     │
-│    → correlate → stage → review                          │
-└──────────────────────┬───────────────────────────────────┘
-                       │  JSON: bookings in
-                       ▼
-┌─ APPLIER ───────────────────────────────────────────────┐
-│  links libgnucash · needs the book lock                  │
-│                                                          │
-│  approved rows → transactions                            │
-│  out: {proposal_id, tx_guid, status}                     │
-└──────────────────────────────────────────────────────────┘
+┌─ PIPELINE ────────────────────────────────────────────────┐
+│  no libgnucash · no book lock · runs anywhere             │
+│                                                           │
+│  statement source (paperless-ngx or files)                │
+│    → ofxstatement → admission (checksum, balance check)   │
+│    → normalise → dedup → correlate → link bills           │
+│    → classify → stage → review file                       │
+└──────────────────────▲───────────────┬────────────────────┘
+  JSON: corpus,        │               │  JSON: rows marked `a`
+  accounts, existing   │               │  in the saved review file
+                       │               ▼
+┌─ BOOK PROCESS ───────┴────────────────────────────────────┐
+│  the only process that links libgnucash                   │
+│                                                           │
+│  exporter: read-only session → corpus, accounts, existing │
+│  applier:  approved rows → transactions, save, read back  │
+│            out: {proposal_id, tx_guid, status}            │
+└───────────────────────────────────────────────────────────┘
 ```
 
 The boundary is what makes the pipeline testable with no GnuCash installed and
 no book present, and it sidesteps the Linux venv problem entirely
 (`python3-gnucash` lives in `dist-packages`).
 
-Classification is a cascade — **rules → kNN → LLM** — in that order, for
+Statements can come from paperless-ngx (the original file, parsed by the same
+ofxstatement plugin) or from files on disk; both are first-class. Bills in
+paperless are matched to bank lines on exact amount and linked as evidence.
+Autobook runs no model on documents, and a statement's lines never come from
+OCR (optical character recognition) text.
+
+Classification is a cascade — **rules → kNN (k-nearest-neighbours) → LLM (large language model)** — in that order, for
 determinism and auditability rather than token cost. The kNN index is built from
 the user's own book at runtime: in-process, CPU only, no network, no model
 download. Its distinguishing property is not accuracy but **abstention**: a
@@ -49,7 +65,7 @@ nearest-neighbour distance gate that says "never seen this" instead of returning
 a confident guess.
 
 Running with **no LLM at all** is a first-class configuration, not a degraded
-fallback.
+fallback. When an LLM is used, the default is a local one.
 
 ## Scope
 
@@ -92,10 +108,11 @@ opening a pull request. Individual sessions:
 
 ```bash
 nox -s fmt lint types test typos docs
-nox -s applier    # applier tests; needs system python3-gnucash
+nox -s applier    # book-process tests; needs system python3-gnucash
 ```
 
-The `applier` session is the only one that may see `python3-gnucash`; every
+The `applier` session (named before the book process had an exporter; it runs
+all book-process tests) is the only one that may see `python3-gnucash`; every
 other session runs in a clean virtualenv, which is how the pipeline's
 independence from libgnucash stays true rather than aspirational.
 
@@ -109,10 +126,12 @@ touching a book.
 | Path | What it is |
 |------|------------|
 | [`docs/design/`](docs/design/README.md) | **Start here.** Decision records, proposals, and the living architecture description. |
-| [`docs/design/proposals/draft/0001-gnucash-auto-booking-pipeline.md`](docs/design/proposals/draft/0001-gnucash-auto-booking-pipeline.md) | The full design. |
+| [`docs/design/proposals/draft/0001-gnucash-auto-booking-pipeline.md`](docs/design/proposals/draft/0001-gnucash-auto-booking-pipeline.md) | The design, as amended by proposal 0002. |
+| [`docs/design/proposals/draft/0002-document-driven-booking-via-paperless.md`](docs/design/proposals/draft/0002-document-driven-booking-via-paperless.md) | Statements and bills from paperless-ngx; amends 0001. |
+| [`docs/design/architecture/`](docs/design/architecture/README.md) | The living description of the design. |
 
 ## License
 
-GPL-3.0-or-later. The applier links libgnucash (GPL-2.0-or-later); Autobook
+GPL-3.0-or-later. The book process links libgnucash (GPL-2.0-or-later); Autobook
 exercises the "or later" option. See
 [ADR-0002](docs/design/adr/0002-gpl-license-and-dco.md).

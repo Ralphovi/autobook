@@ -4,27 +4,27 @@ graph TB
     user["User<br/>(books in GnuCash, reviews in $EDITOR)"]
 
     subgraph autobook["Autobook"]
-        sys["Pipeline + Book process + Launcher"]
+        sys["Pipeline + Book process (exporter, applier) + Launcher"]
     end
 
     paperless["paperless-ngx<br/>statements and bills"]
-    files["Statement files<br/>(fallback, no paperless)"]
+    files["Statement files<br/>(first-class, with or without paperless)"]
     plugins["ofxstatement plugins<br/>(per bank)"]
     book["GnuCash book<br/>(XML / SQLite / MySQL / PostgreSQL)"]
     gui["GnuCash desktop"]
-    model["Model backend<br/>(optional, OpenAI-compatible)"]
+    model["Model backend<br/>(optional, OpenAI-compatible,<br/>local by default)"]
     secrets["Secret Service<br/>(libsecret)"]
     notify["Notifier<br/>(e.g. ntfy)"]
     packs["Rule-pack repository<br/>(separate, versioned)"]
 
-    user -->|"runs launcher, edits review file"| sys
+    user -->|"runs launcher, approves by saving the review file"| sys
     sys -->|"REST, read; optional stamp"| paperless
     sys -->|"reads"| files
     sys -->|"in-process parse"| plugins
-    sys -->|"libgnucash engine API"| book
+    sys -->|"libgnucash engine API<br/>(read-only export; writes)"| book
     sys -->|"exec after run"| gui
     gui -->|"opens"| book
-    sys -->|"redacted token, amount, sign"| model
+    sys -->|"token, account indices, amount, sign<br/>(remote: allowlisted tokens only)"| model
     sys -->|"tokens, API keys"| secrets
     sys -->|"failures, refusals"| notify
     packs -->|"pattern → category data"| sys

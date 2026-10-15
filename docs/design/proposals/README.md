@@ -33,3 +33,11 @@ premise: that the user's own booking history is dense and consistent enough for
 nearest-neighbour classification to abstain reliably. If it is not, the design
 changes rather than the threshold, and accepting the proposal beforehand would
 freeze a decision the evidence has not yet supported.
+
+Proposal 0002 amends 0001: for the rows in its *Changes to proposal 0001* table,
+0002 governs. It is accepted separately, when its own premise test — milestone
+D2, the linkage backtest — has reported.
+
+Both proposals describe *what* each build step contains. The order in which the
+steps are carried out is decided in one place:
+[architecture section 9](../architecture/09-build-order-and-roadmap.md).

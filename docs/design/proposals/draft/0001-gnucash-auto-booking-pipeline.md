@@ -13,9 +13,18 @@ tags:
 # GnuCash Auto-Booking Pipeline
 
 > **Proposal 0001 — the whole system design.** Still `draft`: it becomes
-> `accepted` when build order step 2 (corpus export, kNN, backtest harness) has
+> `accepted` when build order step 2 (corpus export, k-nearest-neighbours (kNN), backtest harness) has
 > reported, because that step tests this document's central premise. See the
 > [proposals index](../README.md) for why that ordering is deliberate.
+>
+> **Amended by [proposal 0002](0002-document-driven-booking-via-paperless.md)** —
+> for the rows in its *Changes to proposal 0001* table, 0002 governs. 0002 is
+> accepted separately: its trigger is the report of its linkage backtest (D2),
+> just as this document's trigger is step 2's report.
+>
+> The order in which the steps are *executed* is set in
+> [architecture chapter 9](../../architecture/09-build-order-and-roadmap.md);
+> the *Build order* section below describes what each step contains.
 >
 > The hard rules this design implies for anyone writing code are restated as
 > enforceable conventions in [`AGENTS.md`](../../../../AGENTS.md).
@@ -23,19 +32,28 @@ tags:
 ## Goal
 
 Automate destination-account assignment for imported bank transactions so that
-booking requires no per-transaction interaction with GnuCash's import UI.
+booking takes one save of a pre-filled review file, not per-transaction
+interaction with GnuCash's import UI.
 
-Target outcome: ~90–95% of transaction count auto-booked; the residual reviewed
-in a purpose-built interface, not GnuCash's matcher. The residual is not a
-modelling failure — it is genuinely ambiguous data (was that Amazon order
-household or a gift?) that a bank statement does not contain the information to
-resolve.
+Target outcome: ~90–95% of transaction count proposed with enough confidence to
+be pre-marked `a` (accept) in the review file; the residual reviewed in a
+purpose-built interface, not GnuCash's matcher. **Approval is saving the review
+file** (see *Review interface*): nothing reaches the book that was not marked `a`
+in the saved file. Unattended runs with no editor are **[DEFERRED]** beyond v1.
+
+The residual is not a modelling failure — it is genuinely ambiguous data (was
+that Amazon order household or a gift?) that a bank statement does not contain
+the information to resolve.
 
 Secondary goal: distributable to other GnuCash users.
 
 ## Out of scope
 
-Two genuine permanent exclusions. Both share a technical root: a GnuCash split
+Two genuine permanent exclusions, settled here. [ADR-0001](../../adr/0001-record-architecture-decisions.md)
+names them as an example of a decision that must be recorded, not re-argued.
+Revisiting either needs an ADR (both are listed as candidates in the ADR index), not a
+proposal or a threshold change. Both
+share a technical root: a GnuCash split
 carries **value** (in the transaction currency) and **amount/quantity** (in the
 split account's commodity). For ordinary transactions these are equal — hence
 `SetValue(x); SetAmount(x)` in the applier. Both exclusions below break that
@@ -63,7 +81,7 @@ categorical. Excluding securities costs approximately none of the tool's value
 while removing most of its complexity.
 
 Revisiting would mean a separate subsystem (commodity resolution, lot policy, fee
-decomposition), not a threshold change. Realistically v2 with its own design.
+decomposition), not a threshold change — and a new ADR first.
 
 ### Splits denominated in a currency other than the account's
 
@@ -79,8 +97,9 @@ The original justification cited known GnuCash CSV importer problems with
 multi-currency. **That evidence is void** — the CSV path was dropped. The
 remaining reason is value ≠ amount plus the need for a rate source.
 
-More tractable to revisit than securities: same two-split shape plus a rate, and
-GnuCash already has a price database to write into.
+If a new ADR ever reopens it, it is more tractable than securities: same
+two-split shape plus a rate, and GnuCash already has a price database to write
+into.
 
 ### Handling out-of-scope rows
 
@@ -90,7 +109,7 @@ These still arrive through ofxstatement. They need explicit detection and an
 - Excluded from the review queue — otherwise every Scalable statement leaves a
   permanent residue of proposals that look like work and never resolve.
 - **Excluded from coverage and drift metrics.** Otherwise the drift detector sees
-  permanently low rules+kNN coverage and either misfires constantly or gets its
+  permanently low rules + k-nearest-neighbour (kNN) coverage and either misfires constantly or gets its
   threshold lowered until it stops catching real drift.
 - Still recorded, so the user can see what was skipped.
 
@@ -98,7 +117,7 @@ These still arrive through ofxstatement. They need explicit detection and an
 
 Two things previously listed here belong elsewhere:
 
-- **Reconciliation, CoA creation, recurring bookings, loan amortisation** —
+- **Reconciliation, chart-of-accounts (CoA) creation, recurring bookings, loan amortisation** —
   deferred to GnuCash's own features, see *Design principle* below. (Never set the
   reconciled flag from code; reconciliation is the independent check on everything
   the pipeline does.)
@@ -129,21 +148,40 @@ Two processes, JSON contract between them. Python throughout. Linux-first. GPL
 (consequence of linking libgnucash).
 
 ```
-┌─ PIPELINE ──────────────────────────────────────────────┐
+┌─ BOOK PROCESS · exporter ────────────────────────────────┐
+│  links libgnucash · SESSION_READ_ONLY · no writes        │
+│  out: corpus, CoA, existing transactions, SX definitions │
+└──────────────────────┬───────────────────────────────────┘
+                       │  JSON: book state out
+                       ▼
+┌─ PIPELINE ───────────────────────────────────────────────┐
 │  no libgnucash · no lock · runs anywhere                 │
 │                                                          │
-│  ofxstatement → normalise → dedup (FITID) → classify     │
-│    → correlate → stage → review                          │
+│  ofxstatement → normalise → dedup (FITID)                │
+│    → correlate (transfers, SX, match_existing)           │
+│    → classify → stage → review                           │
 └──────────────────────┬───────────────────────────────────┘
-                       │  JSON: bookings in
+                       │  JSON: rows approved in the saved review file
                        ▼
-┌─ APPLIER ───────────────────────────────────────────────┐
-│  links libgnucash · needs the book lock · ~few hundred LOC│
+┌─ BOOK PROCESS · applier ─────────────────────────────────┐
+│  links libgnucash · needs the book lock · few hundred LOC│
 │                                                          │
-│  approved rows → transactions                            │
+│  approved rows → transactions → save → assert → read-back│
 │  out: {proposal_id, tx_guid, status}                     │
 └──────────────────────────────────────────────────────────┘
 ```
+
+Correlation runs **before** classification: a row that is the second side of a
+transfer or falls on a scheduled-transaction (SX) occurrence must never reach the
+classifier (see *Correlation pass* and *Splits and match-to-existing*).
+
+**The book process** is the only process that links libgnucash. It has two
+parts: the **exporter**, read-only (`SESSION_READ_ONLY`), used from build step 2
+for the corpus, the CoA, existing transactions and scheduled-transaction
+definitions; and the **applier**, which writes, from build step 5. The ban on
+importing `gnucash` applies to the **pipeline**; it is lifted for the whole book
+process. The nox session and the pytest marker keep the name `applier`, and they
+cover all book-process tests, exporter included.
 
 **Why the boundary matters:**
 
@@ -151,7 +189,7 @@ Two processes, JSON contract between them. Python throughout. Linux-first. GPL
 - Solves the Linux venv problem (`python3-gnucash` lives in `dist-packages`;
   subprocess invocation sidesteps `--system-site-packages` entirely).
 - Makes a future Windows port a component swap rather than a redesign.
-- Language of the applier becomes a local decision, not a global one.
+- Language of the book process becomes a local decision, not a global one.
 
 ### Staging store
 
@@ -160,14 +198,37 @@ Postgres is fine personally but is a hard dependency for other users.
 
 ```
 proposals(
-  fitid PK, source_account, post_date, amount, currency,
+  source_account, fitid_or_key,                -- PK (source_account, fitid_or_key)
+  proposal_id,                                 -- AB- + ULID, see Idempotency
+  post_date, amount, currency,
   raw_memo, normalised_memo,
+  disposition,                                 -- create|create_split|match_existing|out_of_scope|queue
+  queue_reason,                                -- why a row is queued, e.g. "awaiting scheduled transaction", "pending transfer"
   proposed_account, confidence, method,        -- rule | knn | llm
+  rule_id,                                     -- the rule that fired, when method = rule
   status,                                      -- pending|approved|rejected|applied
   applied_tx_guid, human_correction,
   classifier_version, normaliser_version, ts
 )
+
+transfers_pending(
+  counterpart_account, amount,                 -- integer cents
+  window_start, window_end,                    -- date window for the second side
+  proposal_id, tx_guid                         -- the first side; tx_guid once applied
+)
 ```
+
+`fitid_or_key` is the bank's FITID (financial institution transaction ID) only
+when the ofxstatement plugin declares its `id` field bank-supplied. Synthesised
+IDs (ofxstatement hashes date + memo + amount, so two identical card payments on
+one day collide) are not FITIDs: those rows take the `(source_account, checksum,
+ordinal)` key and the overlap rule from proposal 0002 §3.4. File ingest records
+a `statements` row with the file's checksum, exactly as paperless ingest does
+(0002 §7).
+
+The staging key and the **proposal ID** are different things: the key
+identifies the statement line; the proposal ID is generated once per staged row
+and is what goes into a created transaction's `num`.
 
 The staging table is the seam. It decouples classification from write mechanics,
 provides the audit trail, the correction corpus, and the rollback list.
@@ -176,7 +237,7 @@ provides the audit trail, the correction corpus, and the rollback list.
 
 ## Classification cascade
 
-**rules → kNN → LLM.** In that order. Rationale is determinism and
+**rules → kNN → LLM** (large language model). In that order. Rationale is determinism and
 auditability, *not* token cost — at a few hundred transactions/month an
 all-LLM approach would cost cents. A rule that fires is explainable and
 identical every run; a model call is not.
@@ -186,7 +247,10 @@ identical every run; a model call is not.
 Versioned file, git-tracked, hand-owned. Model may *propose*; the human commits.
 That commit is where determinism comes from.
 
-Rule types, in precedence order:
+Rule types (the full precedence table — creditor ID, document-keyed, ambiguity
+flag, memo pattern, then kNN and LLM — is in
+[proposal 0002 §5.1](0002-document-driven-booking-via-paperless.md#51-document-keyed-rule-conditions)
+and governs everywhere):
 
 1. **Exact identifier match** — SEPA Gläubiger-ID (creditor ID). Stable across
    memo reformatting, unique per company, exact. Covers most recurring German
@@ -205,9 +269,13 @@ account, for genuinely fixed-ratio cases:
 - id: versicherung-bundle
   match: {creditor_id: DE98ZZZ09999999999}
   splits:
-    - {account: "Ausgaben:Versicherung:Haftpflicht", type: fixed, value: 12.50}
+    - {account: "Ausgaben:Versicherung:Haftpflicht", type: fixed, cents: 1250}
     - {account: "Ausgaben:Versicherung:Hausrat",     type: remainder}
 ```
+
+Fixed amounts are **integer cents** (`cents: 1250`), never a decimal like
+`12.50`: YAML reads that as a float, and the bindings would accept it through the
+`GncNumeric(float)` constructor (see *Write path*).
 
 Computed splits must sum **exactly** to the transaction total. Mismatch fails the
 row loudly — never dump the difference into Imbalance.
@@ -219,8 +287,12 @@ row loudly — never dump the difference into Imbalance.
 > prevent.
 
 Rules are data, not code — YAML/TOML with id, priority, created-by (`llm`/`user`),
-and backtest score at acceptance time. UI detects conflicts (two rules matching
-the same historical transaction with different targets).
+`auto`, and backtest score at acceptance time. `priority` orders rules **within**
+a precedence tier only; it never lifts a rule into a higher tier. `auto` says
+whether the rule's proposals may be pre-marked `a`: default `true`, except
+document-keyed rules, which default to `false` (0002 §5.2). The rule builder
+reports conflicts — two rules matching the same historical transaction with
+different targets — between any two tiers, not only within one.
 
 ### 2. kNN
 
@@ -232,7 +304,8 @@ runtime, in-process, CPU only, no network, no model download.
 Skip multi-split transactions; ambiguous as labels, rare enough not to matter.
 ~30–60k rows for a decade of personal finance.
 
-**Representation:** character n-gram TF-IDF (`char_wb`, 3–5).
+**Representation:** character n-gram TF-IDF (term frequency–inverse document
+frequency; `char_wb`, 3–5).
 Bank memos are not natural language — merchant tokens with noise, truncation,
 inconsistent casing, German compounds. Char n-grams absorb that; word
 tokenisation shatters on it.
@@ -277,10 +350,18 @@ an existing GnuCash user with years of history — which is most adopters.
 ### 3. LLM (tail only)
 
 - Constrained label space: pass the account list, validate output against it,
-  reject anything not in the tree.
+  reject anything not in the tree. The check also rejects placeholder accounts
+  and accounts of type Equity or Trading.
 - Steering document: versioned, version logged per proposal. Do **not** put the
   account list in it — generate from the live CoA at runtime or it silently
   drifts out of sync with the book.
+- Temperature pinned to 0. The model ID is recorded (it is in the version
+  tuple).
+- **An LLM proposal is always `?`** — never pre-marked `a` — until shadow mode
+  has measured per-method precision for `method=llm`. Only then may a threshold
+  pre-mark LLM rows.
+- What a backend receives, and the default to a local one, is in *Model
+  backend*.
 - Also drafts rule candidates for review (see Scenario 1).
 
 ### Why kNN over GnuCash's Bayes matcher
@@ -289,14 +370,14 @@ Both learn memo→account associations and partition per source account. Differe
 
 | | GnuCash Bayes | This |
 |---|---|---|
-| State | KVP slots in the book | Derived, rebuilt each run |
+| State | KVP (key–value pair) slots in the book | Derived, rebuilt each run |
 | Learns from | Imports only | Every booked transaction, incl. decades of hand entry |
 | Recency | Monotonic counts; early errors vote forever | Decayed out |
 | Explainability | Token-weight product | Actual neighbours: "45 times, most recently 3 weeks ago" |
 | Abstention | Always returns a best guess | Distance = genuine "never seen this" |
 
-Abstention is the real reason, not accuracy. In a system that writes unattended,
-knowing when to abstain matters more than being right more often.
+Abstention is the real reason, not accuracy. In a system that pre-marks rows for
+approval in one save, knowing when to abstain matters more than being right more often.
 
 **Baseline worth running:** reimplement token-Bayes over the corpus (~30 lines)
 as a negative control in the backtest. If kNN does not beat it by a clear margin
@@ -339,8 +420,22 @@ double-book; balances drift.
 
 - Detect counterpart pairs across accounts, emit the transfer from one canonical
   side only.
-- PayPal: match against the funding-account transaction as a **transfer**, not an
-  expense. Classifying as expense double-counts.
+- Runs **before** classification. Every transfer row first goes through a
+  `match_existing` search in its own source account. The second side of a
+  transfer whose first side was booked in an earlier batch resolves to the
+  transaction that first side created — it has splits in both accounts — and is
+  never booked again.
+- A transfer's first side records a `transfers_pending` entry (counterpart
+  account, amount, date window, its proposal ID and, once applied, its
+  transaction GUID). An unmatched second side whose counterpart is pending is
+  queued with reason "pending transfer" — never classified.
+- **PayPal** is set by `paypal_mode`, default `"account"`:
+  - `account`: PayPal is its own GnuCash account and its statement is imported.
+    Bank lines to PayPal are **transfers**, resolved here, not expenses.
+    Classifying them as expenses double-counts.
+  - `pass_through`: PayPal statements are never imported. The bank line is
+    classified by the merchant parsed from its memo (`PAYPAL .VENDORX` →
+    `VENDORX`).
 
 The staging table is the only component with a cross-account view, which is why
 this lives there.
@@ -356,7 +451,7 @@ pipeline held an amortisation schedule there would be **two sources of truth for
 the loan**, and they would drift.
 
 GnuCash's Mortgage & Loan Repayment Assistant already builds a scheduled
-transaction with formulas that recompute per period. That is the correct home —
+transaction (SX) with formulas that recompute per period. That is the correct home —
 and it is already step 1 of the build order.
 
 ### Consequence: the applier needs a match path
@@ -372,11 +467,28 @@ Per-row disposition therefore has five outcomes:
 create | create_split | match_existing | out_of_scope | queue
 ```
 
-**`match_existing`:** search the target account for an unreconciled transaction
-within a tight window (±5 days — not GnuCash's generous ±42) with the same amount.
+**`match_existing`:** search the row's **source** account — not the target
+account; an SX transaction is often multi-split — for a transaction within a
+tight window (±5 days — not GnuCash's generous ±42) with the same amount.
+Candidates are transactions **not already claimed by Autobook** (created by it,
+or recorded in staging as a match). Reconciliation state is not a filter: a user
+who reconciles promptly would otherwise never get a match.
 
-- Found, unambiguous → do not create. Stamp the FITID, link it, mark applied.
+- Found, unambiguous → do not create. Record `applied_tx_guid` in staging and
+  mark applied once a read-back confirms it. Autobook writes **nothing** to the
+  matched transaction — no `num`, no FITID or `online_id` stamp. The one
+  exception is a document link (proposal 0002 §6.1), and never over an existing
+  one.
 - Ambiguous or absent → queue. Never guess.
+
+**Scheduled transactions are created after the launcher's apply.** GnuCash
+creates SX instances in its Since-Last-Run step at GUI start-up, which comes
+after Autobook has run. So the exporter also exports **SX definitions**
+(template accounts, amounts, recurrence) in the `existing` contract. A statement
+row in a source account whose amount and date (± the match window) fall on an SX
+occurrence is **never `create`**: it is `match_existing` if the instance already
+exists, otherwise `queue` with reason "awaiting scheduled transaction". It
+resolves on a later run, after GnuCash has created the instance.
 
 Generalises beyond mortgages: any other scheduled transaction, and anything the
 user entered by hand before importing.
@@ -387,13 +499,21 @@ user entered by hand before importing.
 
 ### Scenario 1 — trial / rule building
 
-Never touches the book. Read-only corpus export, cached; replayable any time, on
-any machine, with the desktop app open.
+Never writes to the book. Read-only corpus export through the exporter, cached;
+replayable any time, on any machine, with the desktop app open.
+`SESSION_READ_ONLY` ignores the lock, so an export of an XML book while GnuCash
+is open reads the last **saved** state, not unsaved edits in the GUI.
 
 **Method is backtesting, not AI supervision.** Ground truth already exists in
-years of hand-booked history. Leave-one-out over the corpus yields per-method,
-per-cluster precision with no model in the loop. Batched sparse matmul — seconds
-to a minute, cheap enough to run routinely.
+years of hand-booked history. Calibration is **rolling-origin**: for each month
+*m*, the index holds only rows before *m* and the test set is month *m*. This
+yields per-method, per-cluster precision with no model in the loop, and it never
+lets a row's own future vote for it. Results are reported in two strata — memo
+seen before in the index, and novel — and the gate thresholds are set on the
+**novel** stratum, because that is where confident errors happen. Leave-one-out
+remains only as an upper bound and for the rule builder's quick "matches N
+historical rows" verdict. Batched sparse matmul — seconds to a minute, cheap
+enough to run routinely.
 
 The LLM's role here is narrow and honest: characterising *why* a cohort fails,
 and drafting candidate rules for review.
@@ -448,14 +568,22 @@ mattered.
 
 ### Scenario 2 — production
 
-Headless-capable. Deterministic. Two failure tiers:
+Deterministic. Headless runs (no editor, no one to save the review file) are
+**[DEFERRED]** beyond v1. In v1 "apply" means *apply what the saved review file
+approved*: rows marked `a` in the saved file, with the account, amount and date
+shown there. Two failure tiers:
 
 **Per-row → queue it, batch proceeds.** Do not hold 58 confident bookings
 hostage to 2 ambiguous ones. Per-row idempotency makes partial commits safe.
 Triggers: confidence under threshold; no rule and kNN distance above cutoff;
-proposed account absent from live CoA; amount/currency mismatching source.
+proposed account absent from live CoA; amount/currency mismatching source; the
+row falls on an SX occurrence whose instance does not exist yet; the row is the
+second side of a pending transfer.
 
-**Batch-level → write nothing.**
+**Batch-level → write nothing (or undo).** Every trigger below except the last is checked
+before the book is opened for writing. The post-apply assertions run after
+`session.save()` (see *Write path*), so when one fails the batch is already in
+the book: it is flagged and notified, and undo reverses it.
 - Coverage drop (rules+kNN share below rolling baseline)
 - LLM fallback rate spike — usually a changed bank memo format or a broken plugin
 - Unusual share of proposals pointing at rarely-used accounts
@@ -481,28 +609,53 @@ a classifier that lost confidence in itself.
 ## Write path
 
 ```python
-cur = book.get_table().lookup("CURRENCY", "EUR")
-tx = Transaction(book)
-tx.BeginEdit()
-tx.SetCurrency(cur)
-tx.SetDate(d, m, y)
-tx.SetDescription(desc)
-tx.SetNum(proposal_id)                 # idempotency key
-for acct, val in ((src, amount), (dst, -amount)):
-    s = Split(book)
-    s.SetParent(tx)
-    s.SetAccount(acct)
-    s.SetValue(GncNumeric(val, 100))
-    s.SetAmount(GncNumeric(val, 100))
-tx.CommitEdit()
+session = Session(book_uri, SessionOpenMode.SESSION_NORMAL_OPEN)
+try:
+    book = session.book
+    for row in approved_create_rows:
+        cur = row.src.GetCommodity()       # the source account's currency, never hard-coded
+        # same commodity in both accounts, fraction 100 — else the row queues
+        check_commodity(cur, row.dst.GetCommodity())
+        tx = Transaction(book)
+        tx.BeginEdit()
+        tx.SetCurrency(cur)
+        tx.SetDate(d, m, y)
+        tx.SetDescription(desc)
+        tx.SetNum(row.proposal_id)          # AB-<ULID>, only on transactions Autobook creates
+        for acct, cents in ((row.src, row.cents), (row.dst, -row.cents)):
+            s = Split(book)
+            s.SetParent(tx)
+            s.SetAccount(acct)
+            s.SetValue(GncNumeric(cents, 100))
+            s.SetAmount(GncNumeric(cents, 100))
+        tx.CommitEdit()
+    session.save()                          # XML: nothing persists before this
+    run_post_apply_assertions(book)
+finally:
+    session.end()                           # releases the lock; does NOT save
+read_back(approved_rows)                    # only now is a row reported applied
 ```
 
 - Every mutation needs `BeginEdit` / `CommitEdit`.
+- **`session.save()` after the last `CommitEdit`**, then the post-apply
+  assertions, then `session.end()` in the `finally`. `end()` does not save
+  (qofsession.h: `qof_session_end` "will not save the data to a file"; the
+  Python `Session` docstring notes this is "always the case with the file
+  backend"). Per backend: **XML** — nothing persists until `save()`, so a batch
+  is all-or-nothing; **SQL** — each `CommitEdit` is durable, and `save()` is a
+  harmless no-op.
+- **Read-back before reporting.** A row is reported applied — in `apply-out` and
+  as `applied` in staging — only after a read-back finds it. XML: reopen with
+  `SESSION_READ_ONLY` and find its ID; SQL: an engine query for its ID.
 - Amounts are `GncNumeric` rationals built from **integer cents**. Never floats.
-  `GncNumeric.from_double` exists; do not use it for money.
+  The bindings expose no `from_double`, but the `GncNumeric(float)` constructor
+  accepts a float — do not let one reach it.
+- **Currency from the source account.** Take the source account's commodity,
+  verify both accounts share it and that its fraction is 100, and only then build
+  `GncNumeric(cents, 100)`. No hard-coded EUR.
 - `SESSION_NORMAL_OPEN` only. **Never `SESSION_BREAK_LOCK`** — that is how you
   corrupt a book by writing under a live GUI session. `SESSION_READ_ONLY` for
-  dry-run and inspection.
+  the exporter, dry-run and inspection.
 - `SessionOpenMode` replaces the deprecated `ignore_lock`/`is_new`/`force_new`
   booleans. Pre-5.x examples will use the old form.
 - `session.end()` in a `finally`, unconditionally. A crashed applier that skips it
@@ -514,10 +667,23 @@ tx.CommitEdit()
 Two systems (book + staging), no distributed transaction. Crash between "committed
 to book" and "marked applied" leaves unknown state.
 
-Fix: proposal ID in the transaction's `num` field. Query for existing IDs before
-each batch, drop those already present, then apply. Makes the applier safely
-re-runnable after any failure mode. Also makes any batch a targeted, reversible
-set — "undo last night" is a delete by ID.
+Fix: proposal ID in the transaction's `num` field. The **proposal ID** is `AB-`
+followed by a ULID (fits GnuCash's `num`), generated once per staged row and
+stored in staging. It is distinct from the staging key. Only values matching
+`^AB-[0-9A-HJKMNP-TV-Z]{26}$` count as Autobook IDs; anything else in `num` is
+the user's and is ignored.
+
+- **`num` is written only on transactions Autobook creates.** On a
+  `match_existing` row Autobook never writes `num` and writes no FITID or
+  `online_id` stamp; staging records `applied_tx_guid` instead.
+- **Re-run.** Before each batch, find created rows by `num` and matched rows by
+  their staging GUID (verified in the book); drop those already present, then
+  apply. Makes the applier safely re-runnable after any failure mode.
+- **Undo** — "undo last night" — deletes only transactions whose GUID is in
+  staging with disposition `create` **and** whose `num` equals that row's
+  proposal ID; both are asserted before each delete. Undo for a matched row
+  removes only the document link Autobook added (proposal 0002 §6.1), never the
+  transaction.
 
 ### Locking
 
@@ -529,33 +695,57 @@ Sequence rather than schedule. Wrap the launcher:
 
 ```bash
 #!/bin/bash
-set -euo pipefail
-backup-book
-if pending_proposals; then
-    generate-review-file /tmp/booking.txt
-    "$EDITOR" /tmp/booking.txt
-    apply-proposals --from /tmp/booking.txt || ntfy "booking failed"
-    assert-book-sane || ntfy "post-apply assertions failed"
-fi
+# Deliberately no `set -e`: each step ends in `|| notify`, and the launcher
+# always reaches `exec gnucash`.
+review="${XDG_RUNTIME_DIR:-/run/user/$UID}/autobook/review.txt"
+
+book_steps() {
+    trap 'rm -f "$review"' EXIT              # the review file never outlives the run
+    backup-book      || { notify "backup failed, nothing booked"; return; }
+    autobook export  || { notify "read-only export failed"; return; }   # exporter, SESSION_READ_ONLY
+    autobook propose || { notify "proposal run failed"; return; }
+    autobook pending || return                                           # nothing to review
+    (umask 077 && mkdir -p "${review%/*}" && autobook review-file > "$review") \
+                     || { notify "review file failed"; return; }
+    "$EDITOR" "$review" || { notify "editor failed, nothing booked"; return; }   # saving = approving every row marked `a`
+    autobook apply --from "$review" || notify "booking failed"          # save, assert, read-back
+}
+
+( book_steps )      # in a subshell: nothing in it can skip the next line
 exec gnucash "$@"
 ```
 
+The review file lives at `$XDG_RUNTIME_DIR/autobook/review.txt`, mode 0600, and
+is removed when the steps finish, however they finish. It holds counterparty
+names; it does not belong in `/tmp`.
+
 The applier cannot race the GUI because it exits before the GUI starts. No lock
-polling, no deferral logic. For unattended runs: attempt `SESSION_NORMAL_OPEN`,
-treat `QOF_BACKEND_LOCKED` as deferred-exit-0, escalate after several consecutive
-deferrals.
+polling, no deferral logic. **[DEFERRED]** beyond v1 — unattended runs: attempt
+`SESSION_NORMAL_OPEN`, treat `ERR_BACKEND_LOCKED` (the `QofBackendError` value in
+qofbackend.h) as deferred-exit-0, escalate after several consecutive deferrals.
 
 ### Assertions (post-apply)
 
 Through the **engine API, not SQL** — SQL assertions do not exist for XML-backend
-users. Imbalance account is zero; each touched account's balance matches the
-statement closing balance. Non-zero exit → ntfy, batch flagged for review.
+users. For each source account that has a statement in the batch:
+
+1. **The batch moved the balance by exactly what it applied:** Δbalance caused
+   by the batch == Σ(amounts of the rows applied).
+2. **When the statement has a closing balance:** balance(source, closing date) ==
+   closing balance − Σ(lines of that statement not yet applied — queued,
+   `out_of_scope`, awaiting a scheduled transaction, pending transfer).
+3. **The Imbalance account is unchanged** by the batch. (Not "zero": an existing
+   Imbalance balance is the user's business, not this batch's.)
+
+Non-zero exit → ntfy, batch flagged for review.
 
 ### Backups
 
-Cannot be `pg_dump` in a distributable tool. Copy the file where the backend is a
-file; warn (do not block) on server backends. The real safety net is that every
-batch is reversible through the `num` key — targeted, and better than a backup.
+Copy the file where the backend is a file. For a PostgreSQL book, the launcher
+runs `pg_dump` when it is on `PATH`, with the database credentials taken from
+the Secret Service; otherwise it warns (does not block). The real safety net is
+that every batch is reversible through the `num` key and staging (see
+*Idempotency*) — targeted, and better than a backup.
 
 ---
 
@@ -570,8 +760,19 @@ a1f3e9    a   2026-07-14   -42,90   Expenses:Lebensmittel      REWE SAGT DANKE
 9de441    ?   2026-07-16   -18,50   Expenses:Freizeit          PAYPAL .VENDORX
 ```
 
+(IDs shortened for the example. The PayPal row shows `paypal_mode =
+"pass_through"`; in the default `account` mode that bank line is a transfer to
+the PayPal account, resolved by the correlation pass, and never appears here
+with an expense account.)
+
 Status: `a` accept, `?` needs decision, `s` skip, `x` reject (records negative
 example). Change an account by typing over it.
+
+**Saving the file is the approval.** The pipeline pre-marks `a` on rows that
+passed the gates, and `?` on everything else. Saving the file approves every row
+marked `a` in the saved file, with exactly the account, amount and date shown.
+Nothing reaches the book that was not marked `a` in the saved file. Until the
+applier exists (build step 5), saving records the decisions to staging only.
 
 Why this over a custom UI: twenty years of editor muscle memory. Multi-cursor for
 eight PayPal rows, `:%s/` when the classifier drifted, yank an account name from
@@ -666,8 +867,9 @@ data. That is the line.
 
 **Two safety properties:**
 
-- **Ambiguity flags.** `AMAZON`, `PAYPAL` → mark *never auto-book, always review*
-  from day one. A shared pack that confidently mis-books Amazon orders across the
+- **Ambiguity flags.** `AMAZON`, `PAYPAL` → force `?`: *never pre-marked, always
+  reviewed*, from day one. They rank above memo-pattern rules in the precedence
+  table (0002 §5.1). A shared pack that confidently mis-books Amazon orders across the
   whole user base is the specific failure that would sink the mechanism.
 - **Signing or explicit pinning.** A pack influences what gets written to books; a
   careless one is a supply-chain problem with financial consequences.
@@ -700,9 +902,18 @@ personal data collected.
   configuration, not a degraded fallback — kNN over the user's own history does
   most of the work anyway. Many GnuCash users will not send financial data
   anywhere.
+- **Local by default.** The default backend is local (Ollama, llama.cpp …). A
+  remote backend is opt-in.
 - **Redaction at the adapter boundary.** Send normalised merchant token, amount,
   sign — not the raw memo. Built in so no backend can see the unredacted string.
   Show the user exactly what leaves the machine.
+- **What a remote backend receives** is narrower still: (a) only a token that
+  matches a rule-pack entry or a user allowlist of business names — otherwise the
+  LLM abstains and the row is queued; and (b) the account list as **numeric
+  indices**, mapped back locally, never the account names. Amount and sign as
+  above. Reason: novel counterparties are disproportionately doctors and
+  lawyers, and account names such as `Kirchensteuer` are themselves Art. 9
+  special-category data.
 - Credentials in the Secret Service via libsecret, not the config file.
 
 Config in `$XDG_CONFIG_HOME` as TOML, mirroring GnuCash's own convention
@@ -763,28 +974,37 @@ users ask and ideally when one of them will help maintain the build.
 
 ## Build order
 
-Sequencing matters more than any individual decision here.
+Sequencing matters more than any individual decision here. This section says
+*what* each step contains; the order they are **executed** in — interleaved with
+proposal 0002's D-milestones — is set in
+[architecture chapter 9](../../architecture/09-build-order-and-roadmap.md).
 
 0. **Spikes** (an afternoon, against a restored copy): Postgres URI with
    non-default port; GnuCash/bindings version pair; whether KVP slot access is
-   needed at all (if the applier is the sole writer, the staging table is the
-   dedup authority and `online_id` can be skipped entirely).
-1. **Scheduled Transactions** for rent, salary, insurance, standing orders.
-   Deleting work beats automating it — plausibly removes a third of volume before
-   a line of code.
-2. **Corpus export + kNN + backtest harness.** No writes, no LLM, no GnuCash.
-   Highest information per hour of anything on this list: it tells you whether the
-   premise holds. If history turns out too sparse or inconsistent for kNN, the
-   whole design changes. **Do this before committing to the rest.**
+   needed at all. For `match_existing` it is not: Autobook writes no FITID or
+   `online_id` stamp on a matched transaction (see *Idempotency*).
+1. **Scheduled Transactions** for rent, salary, insurance, standing orders — a
+   task for the user, in GnuCash. Deleting work beats automating it — plausibly
+   removes a third of volume before a line of code.
+2. **Corpus export + kNN + backtest harness.** No writes; read-only export
+   through the book process (the exporter). No LLM. Rolling-origin backtest,
+   stratified seen/novel. Highest information per hour of anything on this list:
+   it tells you whether the premise holds. If history turns out too sparse or
+   inconsistent for kNN, the whole design changes. **Do this before committing
+   to the rest.**
 3. Ingest, staging, FITID dedup.
-4. Correlation pass.
-5. Applier + assertions, tested against a restored copy.
-6. Text-file review + launcher wrapper. **Useful at this point** — before any GTK,
-   any LLM, any distribution work.
-7. **Shadow mode, one month.** Threshold set so nothing auto-applies. Keep booking
-   by hand; classifier proposes in parallel. Costs nothing extra and produces the
-   per-method, per-confidence-band precision data that justifies every threshold.
-8. Rules file, LLM tail, lower thresholds on evidence.
+4. Correlation pass, including transfers across batches and SX occurrences.
+5. Book process: applier + assertions + launcher wrapper, tested against a
+   restored copy.
+6. Text-file review (no launcher). **Useful at this point** — before any GTK,
+   any LLM, any distribution work. Until the applier exists, saving the review
+   file records the decisions to staging, so shadow mode is the default state.
+7. **Shadow mode** — continuous; closes when there is enough evidence. Thresholds
+   set so nothing is pre-marked. Keep booking by hand; classifier proposes in
+   parallel. Costs nothing extra and produces the per-method,
+   per-confidence-band precision data that justifies every threshold.
+8. Rules file, LLM tail; thresholds lowered on evidence, so more rows are
+   pre-marked.
 9. GTK4 rule builder, category indirection, packaging.
 
 ---
@@ -819,7 +1039,8 @@ Recorded to avoid re-litigating.
 - Whether kNN beats token-Bayes by enough to justify itself (backtest will tell).
 - macOS bindings availability via Homebrew.
 - Whether booking ever happens from more than one machine (affects launcher
-  placement vs. homelab applier with lock deferral).
+  placement vs. homelab applier with lock deferral). The homelab variant is an
+  unattended run, **[DEFERRED]** beyond v1.
 
 ---
 

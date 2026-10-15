@@ -30,3 +30,20 @@ and the permanent scope exclusions. They are deliberately left in the proposal
 for now rather than pre-emptively split out. Extract one into an ADR when it is
 first cited to settle an argument; that is the moment its rationale needs to
 stand on its own, and doing it earlier is filing for its own sake.
+
+### ADR candidates
+
+Decisions that are foundational enough to need an ADR when first contested, or
+that would change something an accepted ADR or a MUST rule already says:
+
+| Candidate | Source | Why it needs an ADR |
+|-----------|--------|---------------------|
+| No model runs on documents; OCR and extraction belong to paperless-ngx | Proposal 0002 §1 | Foundational constraint of the document design; reversing it moves document content inside Autobook's process |
+| A statement is never taken from extraction (OCR, archive version or metadata); only the original file, parsed by its plugin | Proposal 0002 §2 | Foundational constraint; the ledger's reference data must not pass through OCR |
+| Bill matching is on exact amount only | Proposal 0002 §4.2 | Foundational constraint; it is what makes model-filled totals safe |
+| Line-item splits from invoices | Proposal 0002 §9, [architecture section 9](../architecture/09-build-order-and-roadmap.md) | Would amend the "splits are rules-tier only" MUST in AGENTS.md and proposal 0001; a proposal alone cannot do that |
+| Revisiting splits in a currency other than the account's | Proposal 0001 (*Out of scope*) | Settled as permanent in proposal 0001 (ADR-0001's context cites it as an example); revisiting needs an ADR that records the change |
+| Revisiting securities transactions | Proposal 0001 (*Out of scope*) | Settled as permanent in proposal 0001 (ADR-0001's context cites it as an example); revisiting needs an ADR that records the change |
+
+The renaming of the applier to the **book process** (exporter and applier) does
+not contradict ADR-0001: the two-process split it mentions is unchanged.
