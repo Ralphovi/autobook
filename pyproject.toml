@@ -67,6 +67,9 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # Tests assert, use fixtures with shadowing names, and may hardcode sample data.
 "tests/**" = ["S101", "PLR2004"]
+# Book-process tests run in testenv/'s `book` container, the only place the bindings exist.
+"tests/book/**" = ["S101", "PLR2004", "TID251", "S603", "S607", "E402"]
+"tests/live/**" = ["S101", "PLR2004", "S310"]
 # noxfile drives subprocesses by design.
 "noxfile.py" = ["S603", "S607"]
 
@@ -103,6 +106,7 @@ addopts = "-ra --strict-markers --strict-config"
 # (exporter and applier); see AGENTS.md.
 markers = [
     "applier: requires the system python3-gnucash; excluded from the default gate",
+    "live_paperless: needs a running paperless-ngx (testenv/); excluded from the default gate",
 ]
 
 [tool.coverage.run]

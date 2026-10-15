@@ -11,6 +11,6 @@ Closes #
 - [ ] I have linked a real issue.
 - [ ] My commits include DCO sign-off (`git commit -s`).
 - [ ] I ran `nox -s gate`.
-- [ ] I ran `nox -s applier` (only if this touches the applier, against a restored copy of a book).
+- [ ] I ran `nox -s applier` / `nox -s live` (only if this touches the book process or paperless; Docker test environment, synthetic data).
 - [ ] Documentation has been updated if this changes a CLI flag, a config key, a JSON contract field, a staging column, or a disposition.
 - [ ] No real transaction data, IBANs, or credentials are in the diff.

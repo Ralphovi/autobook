@@ -60,16 +60,19 @@ locally, so install them for full parity:
 pipx install nox
 ```
 
-If you touched the book process (the exporter or the applier), also run:
+If you touched the book process (the exporter or the applier), or anything that
+talks to paperless-ngx, also run the tests that need the test environment
+(Docker; see `testenv/README.md`):
 
 ```bash
-nox -s applier
+nox -s applier   # book-process tests: GnuCash 5.14 bindings, XML and PostgreSQL books
+nox -s live      # paperless-ngx 3.3.0 tests
+testenv/run down # throw the environment away
 ```
 
-The session keeps the name `applier` but runs every book-process test. It is the
-only session permitted to see the system `python3-gnucash`, and it is not part
-of `gate` (CI has no GnuCash installed). **Run it against a restored
-copy of a book, never against a real one.**
+The `applier` session keeps its name but runs every book-process test. Both run
+against synthetic books and documents only; CI runs them too. **A real book —
+or a restored copy of one — is never mounted into the test environment.**
 
 ## A note on test data
 

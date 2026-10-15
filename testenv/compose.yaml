@@ -1,0 +1,124 @@
+# Autobook's throwaway test environment. Synthetic data only; see README.md.
+#
+# Everything sits on one internal network: no host ports, no outbound access. Tests run
+# in the `book` container (`testenv/run test …`) and reach the services by name. Several
+# copies can run side by side under different project names (the PDCA lanes do).
+name: autobook-testenv
+
+x-pg: &pg
+  image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+  environment:
+    POSTGRES_USER: test
+    POSTGRES_PASSWORD: test
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U test -p $${PGPORT:-5432}"]
+    interval: 2s
+    timeout: 3s
+    retries: 30
+  tmpfs:
+    - /var/lib/postgresql/data
+
+services:
+  book:
+    build: ./book
+    image: autobook-testenv-book:5.14
+    command: ["sleep", "infinity"]
+    init: true
+    volumes:
+      - ${AUTOBOOK_SRC:-..}:/src:ro
+      - seed-out:/seed-out:ro
+    environment:
+      AUTOBOOK_TESTENV: "1"
+      # GnuCash SQL backend on a non-default port, like a NAS PostgreSQL.
+      AUTOBOOK_TEST_PG: "postgres://test:test@bookdb:5433"
+      AUTOBOOK_PAPERLESS_URL: "http://paperless:8000"
+      AUTOBOOK_PAPERLESS_TOKENS: "/seed-out/tokens.json"
+      PYTHONPATH: /src/src
+    tmpfs:
+      - /tmp
+    depends_on:
+      bookdb: {condition: service_healthy}
+    networks: [testenv]
+
+  bookdb:
+    <<: *pg
+    command: ["postgres", "-p", "5433"]
+    environment:
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+      PGPORT: "5433"
+    networks: [testenv]
+
+  paperlessdb:
+    <<: *pg
+    environment:
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: paperless
+    networks: [testenv]
+
+  redis:
+    image: redis:8-alpine@sha256:3811787313eba226a2ef38658c6ccb91cd5e110edc89c37767de373120a0e5a0
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 30
+    networks: [testenv]
+
+  paperless:
+    # The version the reference deployment runs (paperless-ngx 3.3.0 on PostgreSQL).
+    image: ghcr.io/paperless-ngx/paperless-ngx:3.3.0@sha256:6b94799bc769a063b3340cc5847402e626d4d91d29a295a8e747f8e9bead4207
+    environment:
+      PAPERLESS_REDIS: redis://redis:6379
+      PAPERLESS_DBENGINE: postgresql
+      PAPERLESS_DBHOST: paperlessdb
+      PAPERLESS_DBUSER: test
+      PAPERLESS_DBPASS: test
+      PAPERLESS_DBNAME: paperless
+      PAPERLESS_SECRET_KEY: synthetic-test-environment-only
+      PAPERLESS_ADMIN_USER: admin
+      PAPERLESS_ADMIN_PASSWORD: admin-synthetic
+      # Seeded PDFs carry a text layer; nothing needs OCR and nothing leaves the network.
+      PAPERLESS_OCR_MODE: skip
+      PAPERLESS_OCR_LANGUAGE: deu+eng
+      PAPERLESS_AUDIT_LOG_ENABLED: "true"
+      PAPERLESS_TIME_ZONE: Europe/Berlin
+      USERMAP_UID: "1000"
+      USERMAP_GID: "1000"
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "-o", "/dev/null", "http://localhost:8000/api/"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+    tmpfs:
+      - /usr/src/paperless/data
+      - /usr/src/paperless/media
+    depends_on:
+      paperlessdb: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    networks: [testenv]
+
+  seed:
+    image: autobook-testenv-book:5.14
+    command: ["python3", "/seed/seed_paperless.py"]
+    volumes:
+      - ./seed:/seed:ro
+      - seed-out:/seed-out
+    user: "0:0"
+    environment:
+      PAPERLESS_URL: http://paperless:8000
+      PAPERLESS_ADMIN_USER: admin
+      PAPERLESS_ADMIN_PASSWORD: admin-synthetic
+      SEED_OUT: /seed-out
+    depends_on:
+      paperless: {condition: service_healthy}
+      book: {condition: service_started}
+    networks: [testenv]
+
+volumes:
+  seed-out:
+
+networks:
+  testenv:
+    internal: true
