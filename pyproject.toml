@@ -24,9 +24,9 @@ classifiers = [
 ]
 # Deliberately empty. The pipeline's runtime dependencies (scikit-learn,
 # ofxstatement, …) land with the code that needs them — build order step 2 —
-# rather than being declared speculatively. The applier's dependency,
+# rather than being declared speculatively. The book process's dependency,
 # python3-gnucash, is a SYSTEM package in dist-packages and is never declared
-# here; see ADR-0002 and the pipeline/applier boundary in AGENTS.md.
+# here; see ADR-0002 and the pipeline/book-process boundary in AGENTS.md.
 dependencies = []
 
 [project.urls]
@@ -71,10 +71,11 @@ ignore = [
 "noxfile.py" = ["S603", "S607"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
-# The pipeline/applier boundary, enforced mechanically rather than by review.
-# Only the applier may import gnucash; it carries a per-file ignore when it
-# arrives (build order step 5). See AGENTS.md.
-"gnucash".msg = "Only the applier may import gnucash — the pipeline must run with no GnuCash installed. See AGENTS.md."
+# The pipeline/book-process boundary, enforced mechanically rather than by
+# review. Only the book process may import gnucash: its read-only exporter gets
+# a per-file ignore when it arrives (build order step 2), its applier when that
+# arrives (step 5). See AGENTS.md.
+"gnucash".msg = "Only the book process may import gnucash — the pipeline must run with no GnuCash installed. See AGENTS.md."
 
 [tool.ruff.format]
 docstring-code-format = true
@@ -88,8 +89,8 @@ warn_unreachable = true
 enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
 
 [[tool.mypy.overrides]]
-# python3-gnucash ships no type stubs and is not installed outside the applier
-# session; do not fail the gate on its absence.
+# python3-gnucash ships no type stubs and is not installed outside the
+# `applier` (book-process) session; do not fail the gate on its absence.
 module = ["gnucash.*"]
 ignore_missing_imports = true
 
@@ -98,6 +99,8 @@ ignore_missing_imports = true
 minversion = "8.0"
 testpaths = ["tests"]
 addopts = "-ra --strict-markers --strict-config"
+# The `applier` marker keeps its name but covers every book-process test
+# (exporter and applier); see AGENTS.md.
 markers = [
     "applier: requires the system python3-gnucash; excluded from the default gate",
 ]

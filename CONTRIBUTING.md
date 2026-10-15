@@ -60,14 +60,15 @@ locally, so install them for full parity:
 pipx install nox
 ```
 
-If you touched the applier, also run:
+If you touched the book process (the exporter or the applier), also run:
 
 ```bash
 nox -s applier
 ```
 
-This is the only session permitted to see the system `python3-gnucash`, and it
-is not part of `gate` (CI has no GnuCash installed). **Run it against a restored
+The session keeps the name `applier` but runs every book-process test. It is the
+only session permitted to see the system `python3-gnucash`, and it is not part
+of `gate` (CI has no GnuCash installed). **Run it against a restored
 copy of a book, never against a real one.**
 
 ## A note on test data

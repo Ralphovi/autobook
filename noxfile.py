@@ -10,7 +10,9 @@ Two properties are deliberate:
    clean virtualenv. Only `applier` is created with `venv_params` granting access
    to system site-packages, because `python3-gnucash` lives in `dist-packages`
    and cannot be pip-installed. That split is what keeps "the pipeline does not
-   depend on libgnucash" true rather than aspirational — see AGENTS.md.
+   depend on libgnucash" true rather than aspirational — see AGENTS.md. The
+   session keeps the name `applier`, but it runs every book-process test: the
+   read-only exporter's (from build step 2) and the applier's (from step 5).
 
 2. **Missing external tools warn and skip; they never silently pass.** A skipped
    step prints why. Never report a skipped step as having run.
@@ -75,7 +77,7 @@ def types(session: nox.Session) -> None:
 
 @nox.session(python=PYTHONS)
 def test(session: nox.Session) -> None:
-    """Run the test suite. Excludes applier tests — they need system GnuCash."""
+    """Run the test suite. Excludes book-process tests — they need system GnuCash."""
     session.install(*TEST_DEPS)
     session.install("-e", ".")
     session.run("pytest", "-m", "not applier", *session.posargs)
@@ -105,8 +107,10 @@ def docs(session: nox.Session) -> None:
     venv_params=["--system-site-packages"],
 )
 def applier(session: nox.Session) -> None:
-    """Applier tests. The ONLY session permitted to see python3-gnucash.
+    """Book-process tests. The ONLY session permitted to see python3-gnucash.
 
+    The name predates the exporter: it runs every test marked `applier`, which
+    covers the whole book process — the read-only exporter and the applier.
     Not part of `gate` and not run in CI, which has no GnuCash installed. Run it
     locally against a RESTORED COPY of a book, never a real one.
     """

@@ -39,14 +39,16 @@ body:
     attributes:
       label: Where did it happen?
       options:
+        - Statement source / admission (paperless-ngx or files)
         - Ingest / normalisation
         - Classification (rules)
         - Classification (kNN)
         - Classification (LLM)
         - Correlation / transfer detection
+        - Bill matching / document links (paperless-ngx)
         - Staging or dedup
         - Review file
-        - Applier (writing to the book)
+        - Book process (export, or applier writing to the book)
         - Not sure
     validations:
       required: true
