@@ -389,7 +389,11 @@ on real data, that is a useful result.
 
 Quality depends far more on memo preprocessing than on k or the metric.
 
-Strip SEPA boilerplate (`EREF+`, `MREF+`, `CRED+`, `SVWZ+`, `ABWA+`), embedded
+Remove the SEPA tags (`EREF+`, `MREF+`, `CRED+`, `SVWZ+`, `ABWA+` and the rest of
+the set) and drop the values of the reference, amount, IBAN and BIC tags, but keep
+the purpose text, the creditor ID and the ultimate debtor and creditor names,
+because they tell merchants apart (full tag table:
+[architecture chapter 5, section 5.2](../../architecture/05-building-block-view.md#normaliser)); strip embedded
 dates, card fragments, trailing sequence numbers. What survives is the merchant
 token.
 
