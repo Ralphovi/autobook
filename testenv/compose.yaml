@@ -20,8 +20,13 @@ x-pg: &pg
 
 services:
   book:
-    build: ./book
-    image: autobook-testenv-book:5.14
+    # No fixed image name: each compose project builds its own, because the image holds
+    # the dependencies of the tree it was built from (#53) and PDCA lanes build different
+    # trees side by side.
+    build: &book-build
+      context: ./book
+      additional_contexts:
+        src: ${AUTOBOOK_SRC:-..}
     command: ["sleep", "infinity"]
     init: true
     volumes:
@@ -100,7 +105,8 @@ services:
     networks: [testenv]
 
   seed:
-    image: autobook-testenv-book:5.14
+    # The book image again; Docker's layer cache makes this second build free.
+    build: *book-build
     command: ["python3", "/seed/seed_paperless.py"]
     volumes:
       - ./seed:/seed:ro

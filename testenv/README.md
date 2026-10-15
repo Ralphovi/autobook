@@ -7,7 +7,7 @@ internal network with no host ports and no outbound access.
 
 | Service | What | Pinned |
 |---|---|---|
-| `book` | Ubuntu 26.04 with the GnuCash bindings, pytest and `psql`; tests run here, with the source mounted read-only at `/src` | GnuCash 5.14 (`1:5.14-1build1`), Python 3.14 |
+| `book` | Ubuntu 26.04 with the GnuCash bindings, pytest, `psql` and Autobook's `[project].dependencies` (a venv built from the tree's `pyproject.toml`); tests run here, with the source mounted read-only at `/src` | GnuCash 5.14 (`1:5.14-1build1`), Python 3.14 |
 | `bookdb` | PostgreSQL for GnuCash's SQL backend, on port **5433** (a non-default port, like a NAS) | PostgreSQL 17 |
 | `paperless` + `redis` + `paperlessdb` | paperless-ngx with its own PostgreSQL, OCR off (the seeded PDFs have a text layer) | paperless-ngx 3.3.0 (the reference deployment's version) |
 | `seed` | one-shot: creates paperless's document types, custom fields, correspondents, a restricted `autobook` user and a synthetic set of documents; writes the API tokens for the tests | — |
@@ -27,7 +27,9 @@ testenv/run down         # delete everything, volumes included
 
 `nox -s applier` and `nox -s live` call the same commands. `AUTOBOOK_TESTENV_PROJECT`
 names the compose project, so several copies can run side by side (the PDCA lanes do);
-`AUTOBOOK_SRC` picks the source tree mounted at `/src` (the driver passes its worktree).
+`AUTOBOOK_SRC` picks the source tree mounted at `/src` (the driver passes its worktree)
+and the `pyproject.toml` the `book` image installs dependencies from; each project builds
+its own image, so `testenv/run up` after a dependency change rebuilds only that layer.
 
 ## Rules
 
