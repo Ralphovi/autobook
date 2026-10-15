@@ -19,7 +19,11 @@ import pytest
 MINIMUM_MODULES = {"autobook.pipeline": 11, "autobook.book": 6}
 
 # Building blocks that export their real API instead of one stub entry point.
-IMPLEMENTED = {"autobook.pipeline.classifier", "autobook.pipeline.normaliser"}
+IMPLEMENTED = {
+    "autobook.pipeline.classifier",
+    "autobook.pipeline.normaliser",
+    "autobook.pipeline.trial",
+}
 
 
 def _modules(package: str) -> list[str]:

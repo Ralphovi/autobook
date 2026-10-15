@@ -484,16 +484,52 @@ and writes nothing.
 ### Trial tooling (scenario 1)
 
 Never touches a book except through the exporter's read-only corpus export.
-Contains the **backtest**, which is **rolling-origin**: for each month m, the
-index holds the rows before m and the test set is month m. Results are reported
-per method and per confidence band, with token-Bayes as a negative control, and
-stratified by whether the memo was seen before in the index or is novel; gate
-thresholds are set on the **novel** stratum. Leave-one-out remains only as an
-upper bound and for the rule builder's quick "matches N historical rows"
-verdict. Also the **rule builder** (cluster, propose, backtest immediately,
-accept — GTK4 eventually, CLI first), the **assistant detector** (recurring
-debits and loan-shaped payments handed to GnuCash's assistants), the **pack
-validator**, and from proposal 0002 the **linkage backtest**.
+Contains the **backtest**, which is **rolling-origin**: for each calendar month m
+after the first, the index holds the rows dated before the first day of m and the
+test set is month m. Nothing dated in m or later enters m's index or token-Bayes
+counts (a row's own date does not bound the past; the month boundary does), so a
+row's future never votes for it. Results are reported per method and per
+confidence band, with token-Bayes as a negative control, and stratified by whether
+the memo was seen before in the index or is novel; gate thresholds are set on the
+**novel** stratum. Leave-one-out remains only as an upper bound and for the rule
+builder's quick "matches N historical rows" verdict. Also the **rule builder**
+(cluster, propose, backtest immediately, accept — GTK4 eventually, CLI first), the
+**assistant detector** (recurring debits and loan-shaped payments handed to
+GnuCash's assistants), the **pack validator**, and from proposal 0002 the
+**linkage backtest**.
+
+Built so far: the backtest and its command line (`python -m
+autobook.pipeline.trial backtest`, section 6.6). Its method:
+
+- **Methods.** `knn` is the gated kNN of the classifier (confidence is the vote
+  share of the winner); `token_bayes`, the negative control, is multinomial naive
+  Bayes over the words of the token per `(source_account, sign)`, Laplace
+  smoothing over the partition's vocabulary, class priors from counts, no
+  recency, and abstains only on an empty partition (confidence is the winner's
+  normalised posterior). A word the partition's history does not hold is
+  skipped, so a token with no known word (or a blank one) goes by the priors.
+- **Strata.** A test row is `seen` if the index holds a row of the same
+  `(source_account, sign)` with the same token, `novel` otherwise; every result
+  is also given for `all`. Each carries `rows`, `accepted`, `correct`,
+  `precision` (correct / accepted) and `coverage` (accepted / rows).
+- **Bands.** Confidence bands `[0,0.5)`, `[0.5,0.7)`, `[0.7,0.9)`, `[0.9,1]`
+  (`trial.BANDS`) split the accepted rows by confidence, with the same fields.
+  A band's `rows` is every tested row of the method, the denominator of its
+  coverage, so the bands' `accepted` add up to the method's.
+- **Sweep.** For the kNN novel stratum, the gates re-applied over a grid of
+  `max_distance` and `min_margin` (`trial.SWEEP_DISTANCES`, `SWEEP_MARGINS`) to
+  the stored results; no re-query, and it never feeds back into the run. A row
+  that passes a cell's gates counts as correct when the vote's candidate is the
+  truth.
+- **Upper bound.** `upper_bound.knn_leave_one_out`: one index over all rows,
+  every row queried with `exclude=row`. Never under `methods`, never in the sweep.
+- **Report** (JSON): `report`, `report_version`, `normaliser_version`,
+  `thresholds`, `bands`, `months` (`first`, `last`, `tested`, `by_month`; every
+  calendar month after the first is tested and listed, one with no rows with zero
+  counts), `methods`, `upper_bound`, `novel_sweep`. **Privacy:** counts, rates,
+  versions, thresholds and months only; no memo, token, merchant, account, amount
+  or day, and no per-account breakdown (ch.8 section 8.5).
+- **Not yet:** per-cluster results (they come with the rule builder).
 
 ### Staging store
 
