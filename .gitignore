@@ -39,6 +39,7 @@ htmlcov/
 *.mt940
 *.sta
 *.camt*.xml
+*.pdf
 statements/
 books/
 

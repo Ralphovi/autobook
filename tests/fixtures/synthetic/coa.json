@@ -1,0 +1,62 @@
+{
+  "contract": "coa",
+  "version": 1,
+  "accounts": [
+    {
+      "path": ["Aktiva"],
+      "type": "ASSET",
+      "placeholder": false,
+      "commodity": {"namespace": "CURRENCY", "mnemonic": "EUR"},
+      "fraction": 100
+    },
+    {
+      "path": ["Aktiva", "Girokonto"],
+      "type": "BANK",
+      "placeholder": false,
+      "commodity": {"namespace": "CURRENCY", "mnemonic": "EUR"},
+      "fraction": 100
+    },
+    {
+      "path": ["Aktiva", "Revolut"],
+      "type": "BANK",
+      "placeholder": false,
+      "commodity": {"namespace": "CURRENCY", "mnemonic": "EUR"},
+      "fraction": 100
+    },
+    {
+      "path": ["Ausgaben"],
+      "type": "EXPENSE",
+      "placeholder": false,
+      "commodity": {"namespace": "CURRENCY", "mnemonic": "EUR"},
+      "fraction": 100
+    },
+    {
+      "path": ["Ausgaben", "Lebensmittel"],
+      "type": "EXPENSE",
+      "placeholder": false,
+      "commodity": {"namespace": "CURRENCY", "mnemonic": "EUR"},
+      "fraction": 100
+    },
+    {
+      "path": ["Ausgaben", "Miete"],
+      "type": "EXPENSE",
+      "placeholder": false,
+      "commodity": {"namespace": "CURRENCY", "mnemonic": "EUR"},
+      "fraction": 100
+    },
+    {
+      "path": ["Einnahmen"],
+      "type": "INCOME",
+      "placeholder": false,
+      "commodity": {"namespace": "CURRENCY", "mnemonic": "EUR"},
+      "fraction": 100
+    },
+    {
+      "path": ["Einnahmen", "Gehalt"],
+      "type": "INCOME",
+      "placeholder": false,
+      "commodity": {"namespace": "CURRENCY", "mnemonic": "EUR"},
+      "fraction": 100
+    }
+  ]
+}

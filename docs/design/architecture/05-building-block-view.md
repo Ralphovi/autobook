@@ -8,9 +8,24 @@ tags:
 ---
 # 5. Building block view
 
-> Living document. Describes the designed decomposition; package and module
-> names are provisional until the code exists **[OPEN]**. Diagram source:
+> Living document. Describes the designed decomposition and the package layout
+> that implements it (below). Diagram source:
 > [`diagrams/c4-container.mermaid`](diagrams/c4-container.mermaid).
+
+### Package layout
+
+All under `src/autobook/`, one module per building block. Each stub module sets
+`__all__` to the one name of its entry point.
+
+| Path | Block |
+|------|-------|
+| `contracts.py` | The versioned JSON contracts (section 5.1). Standard library only. |
+| `staging.py` | The staging store (section 5.1). Its own top-level block, because both processes use it. Standard library only. |
+| `pipeline/` | `statement_source`, `admission`, `normaliser`, `correlator`, `bill_matcher`, `classifier`, `model_adapter`, `disposition`, `batch_gate`, `review_file`, `trial` (section 5.2). Never imports `gnucash`. |
+| `book/` | `session`, `exporter`, `applier`, `readback`, `assertions`, `undo` (section 5.3). The only package that may import `gnucash`, per file, as each module needs it. |
+
+The launcher (section 5.4) is a shell script, not a Python module. `import
+autobook` does not import the subpackages.
 
 ## 5.1 Three processes and one store
 
@@ -37,10 +52,39 @@ All communication between pipeline and book process is JSON on stdin/stdout or
 in files under the staging directory. Each contract is versioned; widening one is
 a documented change that updates this section in the same PR.
 
+Wire shape, implemented in `autobook.contracts`:
+
+- Every document is a JSON object with its `contract` name (`"corpus"`,
+  `"coa"`) and an integer `version`, starting at `1`. A reader accepts only a
+  name and version it knows, and rejects anything else with `ContractError`.
+- Money is a plain integer of cents. A float or a boolean is rejected.
+- An account is a **list of path components**, root account excluded, never a
+  separator-joined string. GnuCash takes the account separator from a user
+  preference outside the book (`.` in a headless session, often `:` on a
+  desktop), so a joined string would mean different things on different
+  machines. Nothing in the contracts joins or splits a path.
+- A missing or unknown field is rejected, as is a value outside a closed set.
+- The same checks run when a contract object is built in Python, so a writer
+  cannot serialise a document a reader would refuse (for example a bare string
+  where a path belongs, which would otherwise come out as one component per
+  character).
+- `corpus` is `{"contract", "version", "rows"}`. A row has `raw_memo`,
+  `amount_cents` (the magnitude, an integer greater than zero), `sign`,
+  `source_account`, `destination_account`, `post_date` (`YYYY-MM-DD`) and
+  `provenance`. `sign` is `"out"` when the money leaves `source_account` and
+  `"in"` when it enters it; the kNN index is keyed by `(source_account, sign)`.
+  `provenance` is always `"observed"`: the contract refuses `corrected`.
+- `coa` is `{"contract", "version", "accounts"}`. An account has `path`, `type`
+  (one of GnuCash's account-type names, exact case: `NONE`, `BANK`, `CASH`,
+  `CREDIT`, `ASSET`, `LIABILITY`, `STOCK`, `MUTUAL`, `CURRENCY`, `INCOME`,
+  `EXPENSE`, `EQUITY`, `RECEIVABLE`, `PAYABLE`, `ROOT`, `TRADING`, `CHECKING`,
+  `SAVINGS`, `MONEYMRKT`, `CREDITLINE`), `placeholder`, `commodity`
+  (`{"namespace", "mnemonic"}`) and `fraction` (an integer greater than zero).
+
 | Contract | Direction | Carries |
 |----------|-----------|---------|
 | `corpus` | book → pipeline | Two-split transactions: `(normalised-able raw memo, amount_cents, sign, source_account, destination_account, post_date)`, every one with provenance `observed`. Read-only session. `corrected` rows never come from the book; the pipeline adds them from staging. |
-| `coa` | book → pipeline | The live account tree: full names, types, placeholder flags, commodities and their fractions. |
+| `coa` | book → pipeline | The live account tree: paths (component lists), types, placeholder flags, commodities and their fractions. |
 | `existing` | book → pipeline | Autobook IDs already present in `num` (idempotency); per source account the transactions in a date window, for the `match_existing` search; and the **scheduled-transaction (SX) definitions** — template accounts, amounts, recurrence — so the pipeline can tell when a row falls on an SX occurrence. Read-only session. |
 | `apply-in` | pipeline → book | Approved rows: `proposal_id`, disposition, source and destination (or split specification), `amount_cents`, the source account's commodity, date, description, optional `doc_link`, optional `match_guid`. |
 | `apply-out` | book → pipeline | Per row `{proposal_id, tx_guid, status}`, where `applied` is reported only after a read-back has found the transaction; per batch the assertion results. |
