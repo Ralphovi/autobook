@@ -47,7 +47,11 @@ Kubernetes KEPs and Rust RFCs, kept deliberately lightweight.
 
 The whole system design is [proposal 0001](proposals/draft/0001-gnucash-auto-booking-pipeline.md),
 amended by [proposal 0002](proposals/draft/0002-document-driven-booking-via-paperless.md)
-(statements and bills from paperless-ngx).
+(statements and bills from paperless-ngx). For the rows in 0002's *Changes to
+proposal 0001* table, 0002 governs. The order in which the build steps are
+carried out is decided in
+[architecture section 9](architecture/09-build-order-and-roadmap.md), not in
+the proposals.
 
 Start one from [`templates/proposal.md`](templates/proposal.md).
 
@@ -86,7 +90,9 @@ Start a section from [`templates/architecture.md`](templates/architecture.md).
    — the processes, components and contracts.
 3. [Proposal 0001](proposals/draft/0001-gnucash-auto-booking-pipeline.md) and
    [proposal 0002](proposals/draft/0002-document-driven-booking-via-paperless.md)
-   — the full reasoning, alternatives and build order.
+   — the full reasoning, alternatives, and what each build step contains. The
+   execution order is
+   [architecture section 9](architecture/09-build-order-and-roadmap.md).
 4. [ADR-0002](adr/0002-gpl-license-and-dco.md) — licensing and contribution
    provenance.
 5. [`AGENTS.md`](../../AGENTS.md) — the rules that bind anyone, human or agent,

@@ -2,7 +2,7 @@
 %% Diagrams as code. Render with any Mermaid renderer.
 graph TB
     subgraph launcher["Launcher (shell wrapper)"]
-        L["backup → pipeline → $EDITOR → book process → assert → exec gnucash"]
+        L["backup → export (read-only) → pipeline → $EDITOR → apply → save → assert → read-back → exec gnucash (always)"]
     end
 
     subgraph pipeline["Pipeline process — venv, never imports gnucash"]
@@ -10,21 +10,21 @@ graph TB
         plug["ofxstatement plugins"]
         norm["Normaliser<br/>(profile per source account)"]
         dedup["Admission & dedup<br/>(FITID | checksum+ordinal, balance check)"]
-        corr["Correlator<br/>(transfers, PayPal funding)"]
-        docs["Bill matcher<br/>(exact amount, batch-wide)"]
-        cls["Classifier<br/>rules → kNN → LLM"]
-        adapter["Model adapter<br/>(redaction boundary)"]
+        corr["Correlator<br/>(transfers incl. transfers_pending, PayPal per paypal_mode)"]
+        docs["Bill matcher<br/>(exact amount, confirmed correspondent, batch-wide)"]
+        cls["Classifier<br/>rules → kNN → LLM (one precedence table)"]
+        adapter["Model adapter<br/>(redaction boundary, account indices,<br/>local by default)"]
         disp["Disposition<br/>create · create_split · match_existing · out_of_scope · queue"]
         gate["Batch gate<br/>(drift, version tuple)"]
-        review["Review file<br/>generate / strict parse"]
-        trial["Trial tooling<br/>backtest · rule builder · assistant detector"]
+        review["Review file<br/>pre-marked a / ?, save = approval, strict parse"]
+        trial["Trial tooling<br/>rolling-origin backtest · rule builder · assistant detector<br/>· pack validator · linkage backtest"]
         staging[("Staging store<br/>SQLite | PostgreSQL")]
     end
 
-    subgraph book["Book process — system Python, links libgnucash"]
-        session["Session manager<br/>(NORMAL_OPEN | READ_ONLY, end in finally)"]
-        export["Exporter<br/>corpus · CoA · num IDs"]
-        apply["Applier<br/>create · split · match_existing · doc link"]
+    subgraph book["Book process — system Python, links libgnucash (exporter + applier)"]
+        session["Session manager<br/>(NORMAL_OPEN | READ_ONLY, save, end in finally)"]
+        export["Exporter (read-only)<br/>corpus · CoA · existing · SX definitions"]
+        apply["Applier<br/>create · split · match_existing · doc link · read-back"]
         assert["Post-apply assertions<br/>(engine API)"]
     end
 
@@ -35,6 +35,7 @@ graph TB
     trial --> staging
     export -->|"JSON"| trial
     export -->|"JSON"| cls
+    export -->|"JSON: existing, SX definitions"| corr
     staging -->|"JSON: approved rows"| apply
     apply -->|"JSON: proposal_id, tx_guid, status"| staging
     session --- export
