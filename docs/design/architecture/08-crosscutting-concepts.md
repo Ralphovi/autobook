@@ -147,6 +147,13 @@ TOML in `$XDG_CONFIG_HOME/autobook/`, mirroring GnuCash's own layout. Secrets in
 the Secret Service. Every configuration value that can change a classification is
 part of the version tuple.
 
+The normaliser reads its user profiles and the `accounts.toml` that maps source
+accounts to profiles from `$XDG_CONFIG_HOME/autobook/normaliser/` (or
+`~/.config/autobook/normaliser/` when `XDG_CONFIG_HOME` is unset, empty or not
+absolute); section 5.2 has the file formats and the override rule. They reach the
+version tuple through the normaliser version, a digest of the effective profiles,
+the mapping and the Unicode version.
+
 ## 8.9 Documentation currency
 
 A change that adds or alters a CLI flag, configuration key, JSON contract field,

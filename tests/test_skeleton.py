@@ -1,7 +1,9 @@
 """The package skeleton: one importable stub per building block of ch.5.
 
 Modules are discovered with `pkgutil`, not named, so a missing module shows up
-as a count below the minimum. Everything is loaded inside the test body.
+as a count below the minimum. Everything is loaded inside the test body. A block
+that has been built is listed in `IMPLEMENTED` and leaves the stub checks; every
+other check still covers it.
 """
 
 from __future__ import annotations
@@ -15,6 +17,9 @@ from typing import Any
 import pytest
 
 MINIMUM_MODULES = {"autobook.pipeline": 11, "autobook.book": 6}
+
+# Building blocks that export their real API instead of one stub entry point.
+IMPLEMENTED = {"autobook.pipeline.normaliser"}
 
 
 def _modules(package: str) -> list[str]:
@@ -41,7 +46,11 @@ def test_staging_is_a_top_level_block_not_part_of_the_pipeline() -> None:
 
 
 def test_every_block_has_one_entry_point_that_is_not_implemented() -> None:
-    for name in _all_building_blocks():
+    blocks = _all_building_blocks()
+    assert set(blocks) >= IMPLEMENTED, "IMPLEMENTED names a module that is not a block"
+    for name in blocks:
+        if name in IMPLEMENTED:
+            continue
         module: Any = importlib.import_module(name)
         assert len(module.__all__) == 1, name
         entry_point = getattr(module, module.__all__[0])
