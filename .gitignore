@@ -53,3 +53,5 @@ proposals.sqlite*
 # `git add -f` on a real statement is then a deliberate act, not an accident.
 !tests/fixtures/synthetic/
 !tests/fixtures/synthetic/**
+# …but not the bytecode Python writes next to them: the line above re-includes it.
+tests/fixtures/synthetic/**/__pycache__/

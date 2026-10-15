@@ -62,6 +62,25 @@ there because the failure it prevents is invisible.
 If a tool the gate needs is not installed, the session warns and skips. Never
 report a skipped step as having run.
 
+### Where the tests run, and how each place gets the dependencies
+
+The tests run in four places, and each installs Autobook's dependencies its own way. A
+change that adds, removes or bumps a dependency in `pyproject.toml` must work in all four;
+a plan or brief that adds one says how it reaches each (#53).
+
+| Where | Runs | Gets `[project].dependencies` from |
+|---|---|---|
+| `nox -s gate` (CI job `gate`) | lint, types, the pipeline tests | `pip install -e .` in nox's venv |
+| CI `test-matrix` (Python 3.11–3.14) | the pipeline tests | `pip install -e .` in nox's venv, per interpreter |
+| the test environment (`testenv/`, CI workflow `testenv`) | book-process and paperless tests | the `book` image's venv, built from the tree's `pyproject.toml` (`testenv/book/Dockerfile`) |
+| the PDCA instance (Ralphovi/autobook-pdca) | the bundle's tests, on the host | the instance `.venv`, synced from the worktree's `pyproject.toml` before each check |
+
+pytest imports **every** test module before it filters by marker. So a test module that
+imports a new dependency breaks the test environment's run even when it holds no book-process
+test — the image must have the dependency too. Only `[project].dependencies` reach the image,
+never the `dev` extra: test modules must not import a dev-only tool. `python3-gnucash` is a
+system package and stays out of `pyproject.toml` (the boundary below).
+
 ## The pipeline/book-process boundary is load-bearing
 
 The **book process** is the only process that links libgnucash. It has two
