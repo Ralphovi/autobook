@@ -17,7 +17,7 @@ compose=(docker compose -f "$here/compose.yaml" -p "${AUTOBOOK_TESTENV_PROJECT:-
 
 case "${1:-}" in
   up)
-    "${compose[@]}" build -q book
+    "${compose[@]}" build -q book seed
     "${compose[@]}" up -d --wait book bookdb paperless
     "${compose[@]}" run --rm seed
     ;;
