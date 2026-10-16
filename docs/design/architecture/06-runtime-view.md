@@ -143,7 +143,24 @@ the last saved state). Export the corpus (or use the cached export) and run the
 before m and test on month m. Report precision and coverage per method and per
 confidence band, stratified by memo seen before versus novel, with token-Bayes
 as the negative control; gate thresholds are set on the novel stratum.
-Leave-one-out is computed only as an upper bound. The rule builder, pack
+Leave-one-out is computed only as an upper bound. The command is
+
+```
+python -m autobook.pipeline.trial backtest --corpus <corpus.json> --out <report.json> \
+    --max-distance <x> --min-margin <y> [--normaliser-dir <dir>]
+```
+
+`--max-distance` and `--min-margin` have no default: thresholds are a human
+decision on the report, never a default of the tool. `--normaliser-dir` is passed
+to `normaliser.load`; omitted, the default user directory applies. A corpus file
+that is not a valid `corpus` contract, an unreadable file or a refused normaliser
+profile gives a one-line message on stderr, exit code 2 and no report; success
+writes the JSON report and exits 0. The message names the kind of error and, at
+most, the corpus field or the threshold it was raised at
+(`corpus.rows[3].amount_cents`, `max_distance`), never the error's own text: that
+quotes the refused value (an amount, a date) or a profile path. A refused
+normaliser profile gets no location at all: its location is a path the user
+chose. The rule builder, pack
 validator and linkage backtest are the same machinery applied to a candidate
 rule, a pack, or bill links. A successful trial records the version tuple that
 production will require.
