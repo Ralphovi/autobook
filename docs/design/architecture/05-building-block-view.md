@@ -336,9 +336,86 @@ builder reports conflicts between any two tiers on historical rows.
   `char_wb`, 3–5) over the user's own corpus, one index per
   `(source_account, sign)`, cosine distance, exponential recency decay
   (~18-month half-life), rebuilt every run in-process. A prediction is accepted
-  only if the **nearest-neighbour distance** is under its cutoff **and** the
+  only if the **nearest-neighbour distance** is within its cutoff **and** the
   **vote margin** clears its threshold. Corpus rows are tagged `observed` or
   `corrected`; nothing else can enter.
+
+  In `autobook.pipeline.classifier`: `index_rows(corpus, normaliser)` turns a
+  corpus into `IndexRow`s (one per corpus row, token and `normaliser_version`
+  from `Normaliser.normalise`, `provenance` copied from the corpus row);
+  `KnnIndex.build(rows, *, max_distance, min_margin, half_life_days=HALF_LIFE_DAYS)`
+  fits one `TfidfVectorizer` per `(source_account, sign)`;
+  `KnnIndex.query(token, source_account, sign, *, as_of, normaliser_version,
+  exclude=None)` returns a `KnnResult` (`account`, `candidate`,
+  `nearest_distance`, `margin`, `share`, `failed_gates`, and `accepted`). A query
+  never sees another partition, and is compared with every row of its own.
+  - *Distance.* Measured over every n-gram of the query, including those no row
+    of the partition contains. Each distinct n-gram, counted `c` times in the
+    query, weighs `(1 + ln c) * idf`, with scikit-learn's smooth idf on the
+    partition's counts: `ln((1 + n) / (1 + df)) + 1` for `n` rows of which `df`
+    contain the n-gram. The idf of one that no row contains is therefore
+    `ln(1 + n) + 1`, the idf a term no row contains would get. The query is
+    L2-normalised over all of its n-grams, and its distance to a row is one minus
+    its dot product with the row's fitted (L2-normalised) vector. Text that
+    history never contained matches no row but still counts in the query's
+    length, so it moves the query away from history.
+    `TfidfVectorizer.transform` alone would drop it: a known merchant followed by
+    new words would score as an exact match. A query whose n-grams are all unseen
+    is at distance `1` from every row. Distance is clamped to `[0, 1]`, and a
+    distance under `1e-9` (rounding noise on identical vectors) is read as `0`.
+    Without `exclude`, a query whose n-grams are all known gets the plain cosine
+    distance, and an exact token match is at distance `0`, so it passes even
+    `max_distance = 0`. With `exclude`, neither is guaranteed (see *`exclude`*).
+  - *Vote.* Every row at or below the 15th smallest distance votes (every row,
+    in a partition of fewer than 15). Rows tied with the 15th all vote, so a
+    group of identical memos votes as a whole and recency decides among them:
+    the result depends on the set of rows, not on the order they were given in.
+    A voter's weight is `(1 - distance) * 0.5 ** (age_days / half_life_days)`,
+    with `age_days = max(0, (as_of - post_date).days)` and
+    `HALF_LIFE_DAYS = 548` (18 months). An account's *share* is its weight over
+    the total weight; the candidate is the account with the largest share (on an
+    exact tie, the smaller path tuple); *margin* is
+    `share(candidate) - share(runner-up)`, with a runner-up of `0` when only one
+    account voted and a margin of `0` when the total weight is `0`.
+  - *Gates.* Distance passes iff `nearest_distance <= max_distance`; margin passes
+    iff `margin >= min_margin`. Both are evaluated and every failure is listed in
+    `failed_gates`; `account` is set only when the set is empty. A partition with
+    no rows, or an empty token, gives `nearest_distance = None` and
+    `{"distance"}`. Thresholds are required, have no default, and are validated
+    (`0 <= max_distance < 1`, `0 < min_margin <= 1`), so a tie is never accepted.
+    The distance gate is `<=`, not a strict "under the cutoff": distances take
+    continuous values apart from exactly `0` and `1`, and `max_distance < 1`, so
+    the two differ only at `max_distance = 0`, where `<=` means "exact matches
+    only" and `<` would mean "nothing ever passes".
+  - *`exclude`.* A leave-one-out that does not rebuild the index, for the
+    backtest: the query is measured as if one row equal to `exclude` were not in
+    history. That row is taken out before the voters are chosen, and out of the
+    query's idf (`n` and the `df` of each of its n-grams are one lower, so an
+    n-gram only that row contains weighs as unseen). The other rows are not
+    refitted: their vectors keep the idf fitted with the row in, so a
+    leave-one-out distance is exact on the query's side only. As a result, a
+    remaining row with the query's own token is usually a little above distance
+    `0`, not at it: one row fewer changes an n-gram's idf by an amount that
+    depends on its `df`, so when the query's n-grams have different `df`, its
+    weights are no longer proportional to that row's. With `BEISPIELMARKT` twice
+    and `BEISPIEL GMBH` in one partition, `BEISPIELMARKT` with one of its rows
+    excluded is at `0.000877` from the other, above the `1e-9` snap, so a
+    leave-one-out of a repeated merchant can fail `max_distance = 0`. An
+    `exclude` that the query's partition does not hold (no such row, or a row of
+    another `(source_account, sign)`) raises `KnnError` before any result is
+    returned: a leave-one-out that left nothing out would score the row against
+    itself.
+  - *Provenance and version.* `IndexRow` refuses any provenance but `observed` or
+    `corrected` when built, and `build` checks every row again; both raise
+    `KnnError`, and no partial index exists. `index_rows` copies each corpus
+    row's provenance rather than setting one, so the check sees the real value.
+    `build` takes only `IndexRow` itself, not a subclass, and the checks require
+    exact `str` and `tuple` field types, so neither a subclass nor a field with
+    its own `__eq__` can pass the check; `query` checks an `exclude` row the same
+    way. One index holds one `normaliser_version` (`build` raises on a mix;
+    `query` raises on a version other than the index's). The index is rebuilt
+    every run and never persisted, so it has no version of its own yet; that
+    arrives with the version tuple.
 - **LLM tail.** Through the model adapter only. The label space is the live
   account list, minus placeholder accounts and Equity and Trading account types;
   output outside it is rejected. Temperature is pinned to 0, and the model ID is

@@ -66,8 +66,8 @@ versions that produced it.
 
 **The corpus has provenance.** Rows are `observed` (from the book export, which
 yields nothing else) or `corrected` (review decisions, read from staging).
-Index construction filters on provenance; there is no path by which a synthetic
-row can enter.
+Index construction refuses (raises on) any row that is not `observed` or
+`corrected`; there is no path by which a synthetic row can enter.
 
 **Thresholds have evidence.** Distance cutoffs, vote margins, confidence bands
 and the bill-matching window are set from rolling-origin backtest and

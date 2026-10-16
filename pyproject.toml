@@ -22,12 +22,13 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Office/Business :: Financial :: Accounting",
 ]
-# Deliberately empty. The pipeline's runtime dependencies (scikit-learn,
-# ofxstatement, …) land with the code that needs them — build order step 2 —
-# rather than being declared speculatively. The book process's dependency,
+# scikit-learn fits the kNN tier's character n-gram TF-IDF vectors (ch.5 section
+# 5.2); it is the first runtime dependency, with build order step 2. The other
+# pipeline dependencies (ofxstatement, …) land with the code that needs them rather
+# than being declared speculatively. The book process's dependency,
 # python3-gnucash, is a SYSTEM package in dist-packages and is never declared
 # here; see ADR-0002 and the pipeline/book-process boundary in AGENTS.md.
-dependencies = []
+dependencies = ["scikit-learn>=1.5"]
 
 [project.urls]
 Homepage = "https://github.com/Ralphovi/autobook"
@@ -96,6 +97,23 @@ enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
 # `applier` (book-process) session; do not fail the gate on its absence.
 module = ["gnucash.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# scikit-learn ships no `py.typed` marker, so mypy sees no types for it.
+module = ["sklearn.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# numpy arrives with scikit-learn; the kNN index (autobook.pipeline.classifier)
+# imports it for its distance arithmetic, and pytest reaches it too (its `approx`
+# names `numpy.ndarray`). Its stubs use the 3.12 `type X = ...` statement, which mypy
+# refuses while it checks for 3.11 (`python_version` above), so mypy must not parse
+# them; with `skip`, mypy types numpy as `Any` wherever it is imported. numpy's types
+# are `.pyi` stubs, which mypy follows regardless of `follow_imports` unless
+# `follow_imports_for_stubs` is set.
+module = ["numpy", "numpy.*"]
+follow_imports = "skip"
+follow_imports_for_stubs = true
 
 # ---------------------------------------------------------------------------
 [tool.pytest.ini_options]
