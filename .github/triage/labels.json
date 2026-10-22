@@ -1,0 +1,43 @@
+{
+  "_comment": "Labels for issue triage (ADR-0003). The triage workflow creates any that are missing; it never edits or deletes an existing label (build-order, no-code, spike, human-run stay as they are). Descriptions stay within GitHub's 100-character limit. Owners map an area to the GitHub login assigned when an issue has no assignee; \"*\" is the fallback.",
+  "severity": {
+    "sev:critical": {"color": "B60205", "description": "Wrong or duplicated booking, corrupted book, reconciled flag set, float money, data leak"},
+    "sev:major": {"color": "D93F0B", "description": "Safety check off or bypassable, crash, data dropped without a report, core flow broken"},
+    "sev:minor": {"color": "FBCA04", "description": "Wrong behaviour with a workaround, or a visible degradation (ADR-0003)"},
+    "sev:trivial": {"color": "C2E0C6", "description": "Cosmetic, wording, docs, or a test-only gap (ADR-0003)"}
+  },
+  "reach": {
+    "reach:common": {"color": "5319E7", "description": "Normal use with an ordinary book, statement and configuration triggers it (ADR-0003)"},
+    "reach:edge": {"color": "8A63D2", "description": "Needs an unusual book, statement, backend, configuration or timing (ADR-0003)"},
+    "reach:adversarial": {"color": "C5B7E8", "description": "Only when someone sets it up: crafted memo, statement or document, hostile rule pack"}
+  },
+  "area": {
+    "area:admission": {"color": "BFDADC", "description": "Statement source, admission and dedup (architecture 5.2)"},
+    "area:normaliser": {"color": "BFDADC", "description": "Memo normaliser and its profiles (architecture 5.2)"},
+    "area:correlator": {"color": "BFDADC", "description": "Correlator: transfers, match_existing, pending transfers (architecture 5.2)"},
+    "area:classifier": {"color": "BFDADC", "description": "Classifier tiers: rules, kNN and the LLM tail (architecture 5.2)"},
+    "area:model-adapter": {"color": "BFDADC", "description": "Model adapter: redaction boundary and backends (architecture 5.2)"},
+    "area:documents": {"color": "BFDADC", "description": "paperless-ngx documents and the bill matcher (proposal 0002)"},
+    "area:review": {"color": "BFDADC", "description": "Disposition, batch gate and the review file (architecture 5.2)"},
+    "area:staging": {"color": "BFDADC", "description": "Staging store (architecture 5.1)"},
+    "area:contracts": {"color": "BFDADC", "description": "JSON contracts between the pipeline and the book process (architecture 5.1)"},
+    "area:book": {"color": "BFDADC", "description": "Book process: session, exporter, applier, read-back, assertions, undo (5.3)"},
+    "area:launcher": {"color": "BFDADC", "description": "Launcher: backup, export, review, apply, open GnuCash (architecture 5.4)"},
+    "area:trial": {"color": "BFDADC", "description": "Trial tooling and backtests (architecture 5.2)"},
+    "area:testenv": {"color": "BFDADC", "description": "The throwaway test environment and its synthetic data (testenv/)"},
+    "area:docs": {"color": "BFDADC", "description": "Documentation and design records"},
+    "area:ci": {"color": "BFDADC", "description": "CI, the gate, workflows and repository tooling"}
+  },
+  "priority": {
+    "priority:P0": {"color": "B60205", "description": "Drop other work, fix now, block the release (ADR-0003)"},
+    "priority:P1": {"color": "D93F0B", "description": "Current milestone (ADR-0003)"},
+    "priority:P2": {"color": "FBCA04", "description": "Next milestone, or whenever it fits (ADR-0003)"},
+    "priority:P3": {"color": "C2E0C6", "description": "Backlog (ADR-0003)"}
+  },
+  "other": {
+    "needs-triage": {"color": "EDEDED", "description": "Severity or reach could not be placed; see the triage comment (ADR-0003)"}
+  },
+  "owners": {
+    "*": "eduralph"
+  }
+}
