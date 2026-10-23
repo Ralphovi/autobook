@@ -303,9 +303,10 @@ def _row(label: str, why: str) -> str:
 def build_plan(issue: Issue, verdict: dict, config: dict, *, model: str, usage: str,
                truncated: bool) -> Plan:
     issue_text = f"{issue.title}\n{issue.body or ''}"
-    if verdict["vulnerability_report"] or verdict["financial_data"]:
+    if verdict["vulnerability_report"] or verdict["financial_data"] or verdict["secret_in_issue"]:
         # Labels yes, explanation no: a public comment must not restate the details. The
-        # echo check misses a short payee or memo phrase, so financial data is held back whole.
+        # echo check misses a short payee, memo phrase or one-word password, so these are
+        # held back whole.
         reasons = {k: "Not restated here; see the note below." for k in verdict["reasons"]}
     else:
         reasons = {k: scrub(v, issue_text) for k, v in verdict["reasons"].items()}
@@ -331,6 +332,7 @@ def build_plan(issue: Issue, verdict: dict, config: dict, *, model: str, usage: 
     if verdict["unsure"]:
         plan.add_labels.append("needs-triage")
         missing = ("not restated" if verdict["vulnerability_report"] or verdict["financial_data"]
+                   or verdict["secret_in_issue"]
                    else scrub(verdict["missing"], issue_text))
         rows.append(_row("needs-triage", f"Severity or reach could not be placed. Missing: {missing}"))
     else:
@@ -384,7 +386,7 @@ def build_plan(issue: Issue, verdict: dict, config: dict, *, model: str, usage: 
 
 # --- a real IBAN is never sent to the model -----------------------------------------------
 
-_IBAN = re.compile(r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]){11,30}\b", re.IGNORECASE)
+_IBAN = re.compile(r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]){11,30}\b", re.IGNORECASE | re.ASCII)
 
 
 def _iban_valid(candidate: str) -> bool:
@@ -398,7 +400,8 @@ def contains_real_iban(text: str) -> bool:
     """True when the text holds a checksum-valid IBAN: most likely a real account. Such
     an issue is not sent to the model at all (ADR-0003 section 5). The pattern is greedy,
     so an uppercase word after the IBAN can join the match; every IBAN length within the
-    match is checked (15 to 34 characters). Case is ignored: a pasted IBAN can be lowercase."""
+    match is checked (15 to 34 characters). Case is ignored, for ASCII only: a pasted IBAN can be lowercase, and a Unicode letter
+    that folds to A-Z (the Kelvin sign) must not reach the base-36 conversion."""
     for match in _IBAN.findall(text):
         s = match.replace(" ", "").upper()
         if any(_iban_valid(s[:n]) for n in range(15, min(len(s), 34) + 1)):

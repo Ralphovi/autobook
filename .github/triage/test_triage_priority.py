@@ -216,6 +216,12 @@ class RealIban(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertTrue(tp.contains_real_iban(text))
 
+    def test_unicode_letters_do_not_break_the_check(self) -> None:
+        # U+212A KELVIN SIGN and U+0130 fold to K and i under Unicode case-insensitivity.
+        for text in ("\u212aB121234567890123", "\u0130B121234567890123 and more"):
+            with self.subTest(text=text):
+                self.assertFalse(tp.contains_real_iban(text))
+
     def test_held_back_issue_keeps_the_retry_on_an_edit(self) -> None:
         # An edit that adds a real IBAN to an issue at needs-triage: the hold-back note
         # must reach apply() with retry set, or apply() skips the issue as already triaged.
@@ -376,6 +382,16 @@ class BuildPlan(unittest.TestCase):
                           "area": "The correlator.", "overrides": "None apply."})
         self.assertNotIn("Imaginary", p.comment)
         self.assertIn("made-up example", p.comment)
+
+    def test_secret_withholds_every_reason(self) -> None:
+        # A one-word password has no digit or mark, so the echo check alone misses it.
+        i = issue(body="The config holds password huntertwo and the import fails.")
+        p = plan(i=i, secret_in_issue=True, unsure=True, missing="Whether huntertwo is still valid.",
+                 reasons={"type": "The import fails with password huntertwo set.",
+                          "severity": "Uses huntertwo.", "reach": "Anyone with huntertwo.",
+                          "area": "The importer.", "overrides": "None apply."})
+        self.assertNotIn("huntertwo", p.comment)
+        self.assertIn("rotate", p.comment)
 
     def test_never_touches_the_milestone(self) -> None:
         self.assertFalse(hasattr(plan(), "milestone"))
