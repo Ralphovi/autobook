@@ -20,6 +20,7 @@ See [ADR-0001](0001-record-architecture-decisions.md) for the process and
 |---|-------|--------|-------|
 | [0001](0001-record-architecture-decisions.md) | Record architecture decisions | Accepted | |
 | [0002](0002-gpl-license-and-dco.md) | GPL-3.0-or-later, and the DCO | Accepted | Whole repo GPL; the PDCA harness stays Apache-2.0 |
+| [0003](0003-issue-priority-and-automated-triage.md) | Issue priority and automated triage: severity × reach set P0–P3; a GitHub Action applies it with one Claude API call per issue | Proposed | Booking-integrity and security/privacy overrides; Workload Identity Federation; a real IBAN is never sent to the model |
 
 ## Decisions not yet recorded here
 
