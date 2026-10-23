@@ -23,23 +23,25 @@ matters more than any individual decision.
 
 ## The execution order
 
-Milestone IDs are those of the proposals (0001's steps 0–9, 0002's D0–D4) and
-are referenced elsewhere; the table lists them in the order they are built.
+Milestone IDs are those of the proposals (0001's steps 0–9, 0002's D0–D4,
+[proposal 0003](../proposals/draft/0003-rules-first-mined-from-history.md)'s
+R1–R2) and are referenced elsewhere; the table lists them in the order they are
+built.
 
 | Order | # | Milestone | Proves / retires | Status |
 |-------|---|-----------|------------------|--------|
 | 1 | 0 + D0 | Spikes | Bindings/GnuCash version pair; PostgreSQL URI with non-default port; paperless API surfaces (original download with `?version=`, checksum, custom field query, document history actor with `PAPERLESS_AUDIT_LOG_ENABLED`); document-link binding; whether every non-statement, non-bill document in paperless has an owner (the dedicated user's restriction depends on it); statement form (PDF or export). KVP (key-value pair) slot access is not needed on the `match_existing` path: no FITID / `online_id` stamp is written there (decided) | planned |
 | 2 | 1 | Scheduled Transactions for rent, salary, insurance, standing orders | Deletes work before automating it — plausibly a third of volume | user task, not code |
-| 3 | 2 | Corpus export (the book process's read-only exporter), kNN, rolling-origin backtest harness | **The premise**: history is dense and consistent enough for kNN (k-nearest-neighbour) to abstain reliably, measured on novel memos. No writes, no LLM (large language model), no GUI. **Decision point; proposal 0001 is accepted or reworked on this result.** | planned — first code |
+| 3 | 2 + R1 | Corpus export (the book process's read-only exporter), rule mining, kNN, rolling-origin backtest harness | **The premise**: mined rules decide the head at measured held-out precision, and history is dense and consistent enough for kNN (k-nearest-neighbour) to abstain reliably on the **residual** the rules leave, measured on novel memos. No writes, no LLM (large language model), no GUI. **Decision point; proposals 0001 and 0003 are accepted or reworked on this result.** | planned — first code |
 | 4 | D2 | Linkage backtest | **The second premise**: linked bills resolve a meaningful share of the residual. Read-only. **Decision point** for D3 and D4 (if it fails, proposal 0002 stops at D1); **proposal 0002 is accepted or revised on this report.** | planned |
 | 5 | 3 | Ingest, staging, dedup | Statements become staged rows with stable keys | planned |
-| 6 | 6 | Text review file (no launcher) | **The loop closes here**: real statements in, proposals shown, decisions recorded. Until the applier exists, saving the review file records decisions to staging and writes nothing, so shadow mode is the default state | planned |
+| 6 | 6 + R2 | Text review file (no launcher); rules file, rule engine and the candidate file for accepting mined rules | **The loop closes here**: real statements in, accepted rules first, proposals shown, decisions recorded. Until the applier exists, saving the review file records decisions to staging and writes nothing, so shadow mode is the default state | planned |
 | 7 | D1 | Statements from paperless | Paperless as a source loses nothing against files; balance check in place | planned |
 | 8 | 4 | Correlation pass | No transfer booked twice, within a batch or across batches | planned |
 | 9 | 5 | Book process: applier, assertions and launcher, on a restored copy | Writes are exact, saved, confirmed by read-back, idempotent and reversible; the launcher always reaches `exec gnucash` | planned |
 | 10 | D3 | Bill linking and document links | Links written correctly on create and `match_existing`; order-independent matching | planned |
 | 11 | 7 + D4 | Shadow evidence | Per-method, per-band precision (document-keyed rules and `method=llm` included) that justifies every threshold. Continuous from step 6 on; closes when there is enough evidence | planned |
-| 12 | 8 | Rules file, LLM tail, thresholds on evidence | Thresholds lowered on evidence: more rows pre-marked `a` at measured precision | planned |
+| 12 | 8 | LLM tail, LLM rule drafting, thresholds on evidence | Thresholds lowered on evidence: more rows pre-marked `a` at measured precision | planned |
 | 13 | 9 | GTK4 rule builder, category indirection, packaging | Distributable to other users | planned |
 
 Steps 2 and D2 are the two **decision points**: if either premise fails, the
@@ -51,8 +53,10 @@ The proposals order their steps by information gained per hour. This order
 optimises a related but different goal: **how soon the tool can be tried on
 real statements**. The smallest loop that lets a user judge the tool is ingest →
 classify → show the proposals: steps 2, 3 and 6. It needs no applier, no
-correlation, no rules file, no LLM and no GUI, so the review file moves ahead of
-the write path.
+correlation, no LLM and no GUI, so the review file moves ahead of the write
+path. It does include the rules file (R2): its rules are mined from history and
+accepted in a text file, so they cost no GUI, and they make the first loop
+deterministic for the head of the volume (proposal 0003).
 
 Some things keep their place for reasons that are not preference:
 
