@@ -331,7 +331,10 @@ builder reports conflicts between any two tiers on historical rows.
 - **Rules.** A versioned, git-tracked file owned by the user, plus bundled
   packs. Rules may target a split specification; they are the only tier that
   may. Fixed split amounts are integer cents (`cents: 1250`), never a decimal
-  value.
+  value. Most user rules are **mined from history** and accepted by the user
+  (proposal 0003): creditor-ID and memo-pattern candidates, scored on a held-out
+  period, with `created-by: mined` and `mined_cutoff`. Mining never produces a
+  split specification.
 - **kNN.** Character n-gram TF-IDF (term frequency–inverse document frequency;
   `char_wb`, 3–5) over the user's own corpus, one index per
   `(source_account, sign)`, cosine distance, exponential recency decay
@@ -492,8 +495,10 @@ row's future never votes for it. Results are reported per method and per
 confidence band, with token-Bayes as a negative control, and stratified by whether
 the memo was seen before in the index or is novel; gate thresholds are set on the
 **novel** stratum. Leave-one-out remains only as an upper bound and for the rule
-builder's quick "matches N historical rows" verdict. Also the **rule builder**
-(cluster, propose, backtest immediately, accept — GTK4 eventually, CLI first), the
+builder's quick "matches N historical rows" verdict. Also the **rule miner**
+(candidates from history, scored on a held-out period, accepted in a text file;
+proposal 0003), the **rule builder** (cluster, propose, backtest immediately,
+accept — GTK4 eventually, CLI first), the
 **assistant detector** (recurring debits and loan-shaped payments handed to
 GnuCash's assistants), the **pack validator**, and from proposal 0002 the
 **linkage backtest**.

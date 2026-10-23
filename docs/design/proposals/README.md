@@ -19,6 +19,7 @@ Start one from [`../templates/proposal.md`](../templates/proposal.md).
 |---|-------|----------|
 | [0001](draft/0001-gnucash-auto-booking-pipeline.md) | GnuCash auto-booking pipeline | — |
 | [0002](draft/0002-document-driven-booking-via-paperless.md) | Document-driven booking — statements and bills from paperless-ngx | — |
+| [0003](draft/0003-rules-first-mined-from-history.md) | Rules first — mined from history | — |
 
 ## Accepted
 
@@ -38,6 +39,11 @@ Proposal 0002 amends 0001: for the rows in its *Changes to proposal 0001* table,
 0002 governs. It is accepted separately, when its own premise test — milestone
 D2, the linkage backtest — has reported.
 
-Both proposals describe *what* each build step contains. The order in which the
+Proposal 0003 amends 0001 the same way: the rules tier is built first and mined
+from the user's history, and kNN is judged on the residual. Its milestones R1
+and R2 ride on 0001's steps 2 and 6, so the execution order keeps its sequence.
+It is accepted when R1, rule mining in the backtest, has reported.
+
+All three proposals describe *what* each build step contains. The order in which the
 steps are carried out is decided in one place:
 [architecture section 9](../architecture/09-build-order-and-roadmap.md).
