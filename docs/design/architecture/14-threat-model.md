@@ -72,7 +72,7 @@ conventional ones.
 | Book format upgraded by a newer libgnucash | Availability of the user's own book | Refuse to write any book that would need an upgrade (relevant the day bindings are bundled) |
 | A refusal blocks the user's bookkeeping | Availability | GnuCash always opens; proposals stay pending |
 | Prompt injection through issue text into the repository's triage bot (mislabel, abusive comment, spend) | Integrity of the issue tracker | The model gets no tools and no token; its answer is validated against the label sets and the priority computed by code; the job holds `contents: read`, `issues: write` and `id-token: write` only and calls just the label, assignee and comment endpoints; the Claude API token is federated, short-lived and accepted only from `main`; a workspace spending limit caps cost (ADR-0003) |
-| Financial data pasted into a public issue repeated by the triage bot, or sent on to its model | Confidentiality | An issue with a checksum-valid IBAN is not sent to the model; reasons that repeat the issue (word runs, numbers, amounts, identifier-like tokens) are withheld; the bot asks for a made-up example (ADR-0003) |
+| Financial data pasted into a public issue repeated by the triage bot, or sent on to its model | Confidentiality | An issue with a checksum-valid IBAN is not sent to the model; reasons that repeat the issue (word runs, numbers, amounts, identifier-like tokens) are withheld, and all reasons are when the model flags financial data; the bot asks for a made-up example (ADR-0003) |
 
 ## 14.4 Residual and accepted risks
 

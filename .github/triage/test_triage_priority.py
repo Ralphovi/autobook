@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -208,6 +209,25 @@ class RealIban(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertTrue(tp.contains_real_iban(text))
 
+    def test_lowercase_iban_is_held_back(self) -> None:
+        for text in (f"Booked from {self.EXAMPLE.lower()} twice.",
+                     f"Booked from {self.EXAMPLE.replace(' ', '').lower()} twice.",
+                     "Booked from gb82West12345698765432 twice."):
+            with self.subTest(text=text):
+                self.assertTrue(tp.contains_real_iban(text))
+
+    def test_held_back_issue_keeps_the_retry_on_an_edit(self) -> None:
+        # An edit that adds a real IBAN to an issue at needs-triage: the hold-back note
+        # must reach apply() with retry set, or apply() skips the issue as already triaged.
+        edited = issue(body=f"From {self.EXAMPLE}.", labels={"needs-triage"}, triage_count=1)
+        with mock.patch.dict(sys.modules, {"anthropic": mock.MagicMock()}), \
+                mock.patch.object(tp, "ensure_labels"), \
+                mock.patch.object(tp, "fetch_issue", return_value=edited), \
+                mock.patch.object(tp, "apply") as applied:
+            tp.main(["--issue", "7", "--repo", "o/r", "--retry"])
+        applied.assert_called_once()
+        self.assertTrue(applied.call_args.kwargs.get("retry"))
+
     def test_made_up_iban_is_classified(self) -> None:
         self.assertFalse(tp.contains_real_iban("From DE00 1234 5678 9012 3456 78, booked twice."))
 
@@ -340,6 +360,22 @@ class BuildPlan(unittest.TestCase):
         p = plan(severity="minor", reach="edge", flags=dict(NO_FLAGS, booking_integrity=True))
         self.assertIn("priority:P1", p.add_labels)
         self.assertIn("Raised by: booking-integrity bug", p.comment)
+
+    def test_vulnerability_report_gets_the_security_floor(self) -> None:
+        p = plan(severity="trivial", reach="adversarial", vulnerability_report=True)
+        self.assertIn("priority:P1", p.add_labels)
+        self.assertIn("security or privacy bug", p.comment)
+
+    def test_financial_data_withholds_every_reason(self) -> None:
+        # A short payee name slips past the echo check; with the flag set, no reason is posted.
+        i = issue(body="Paid Praxis Dr. Imaginary, memo Rechnung, booked twice.")
+        p = plan(i=i, financial_data=True,
+                 reasons={"type": "A payment to Praxis Dr. Imaginary is wrong.",
+                          "severity": "Dr. Imaginary is booked twice.",
+                          "reach": "Any Praxis Dr. Imaginary payment.",
+                          "area": "The correlator.", "overrides": "None apply."})
+        self.assertNotIn("Imaginary", p.comment)
+        self.assertIn("made-up example", p.comment)
 
     def test_never_touches_the_milestone(self) -> None:
         self.assertFalse(hasattr(plan(), "milestone"))

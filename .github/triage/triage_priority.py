@@ -138,6 +138,10 @@ def validate(verdict: dict, areas: list[str]) -> dict:
         if len(chosen) != len(verdict["areas"]):
             raise InvalidVerdict(f"areas {verdict['areas']!r}")
         flags = {f: verdict["flags"][f] is True for f in FLAGS}
+        # A vulnerability report is a security issue, so it gets the security floor even
+        # when the model left that flag off.
+        if verdict["vulnerability_report"] is True:
+            flags["security_or_privacy"] = True
         reasons = {k: str(verdict["reasons"][k]) for k in ("type", "severity", "reach", "area", "overrides")}
         return {
             "type": verdict["type"],
@@ -299,8 +303,9 @@ def _row(label: str, why: str) -> str:
 def build_plan(issue: Issue, verdict: dict, config: dict, *, model: str, usage: str,
                truncated: bool) -> Plan:
     issue_text = f"{issue.title}\n{issue.body or ''}"
-    if verdict["vulnerability_report"]:
-        # Labels yes, explanation no: a public comment must not restate the details.
+    if verdict["vulnerability_report"] or verdict["financial_data"]:
+        # Labels yes, explanation no: a public comment must not restate the details. The
+        # echo check misses a short payee or memo phrase, so financial data is held back whole.
         reasons = {k: "Not restated here; see the note below." for k in verdict["reasons"]}
     else:
         reasons = {k: scrub(v, issue_text) for k, v in verdict["reasons"].items()}
@@ -325,7 +330,7 @@ def build_plan(issue: Issue, verdict: dict, config: dict, *, model: str, usage: 
 
     if verdict["unsure"]:
         plan.add_labels.append("needs-triage")
-        missing = ("not restated" if verdict["vulnerability_report"]
+        missing = ("not restated" if verdict["vulnerability_report"] or verdict["financial_data"]
                    else scrub(verdict["missing"], issue_text))
         rows.append(_row("needs-triage", f"Severity or reach could not be placed. Missing: {missing}"))
     else:
@@ -379,7 +384,7 @@ def build_plan(issue: Issue, verdict: dict, config: dict, *, model: str, usage: 
 
 # --- a real IBAN is never sent to the model -----------------------------------------------
 
-_IBAN = re.compile(r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]){11,30}\b")
+_IBAN = re.compile(r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]){11,30}\b", re.IGNORECASE)
 
 
 def _iban_valid(candidate: str) -> bool:
@@ -393,9 +398,9 @@ def contains_real_iban(text: str) -> bool:
     """True when the text holds a checksum-valid IBAN: most likely a real account. Such
     an issue is not sent to the model at all (ADR-0003 section 5). The pattern is greedy,
     so an uppercase word after the IBAN can join the match; every IBAN length within the
-    match is checked (15 to 34 characters)."""
+    match is checked (15 to 34 characters). Case is ignored: a pasted IBAN can be lowercase."""
     for match in _IBAN.findall(text):
-        s = match.replace(" ", "")
+        s = match.replace(" ", "").upper()
         if any(_iban_valid(s[:n]) for n in range(15, min(len(s), 34) + 1)):
             return True
     return False
@@ -587,7 +592,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.dry_run:
                 print(plan.comment)
             else:
-                apply(args.repo, issue, plan)
+                apply(args.repo, issue, plan, retry=args.retry)
             continue
         try:
             result, truncated = classify(client, prompt, issue, areas)
