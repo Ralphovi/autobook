@@ -40,7 +40,7 @@ are referenced elsewhere; the table lists them in the order they are built.
 | 10 | D3 | Bill linking and document links | Links written correctly on create and `match_existing`; order-independent matching | planned |
 | 11 | 7 + D4 | Shadow evidence | Per-method, per-band precision (document-keyed rules and `method=llm` included) that justifies every threshold. Continuous from step 6 on; closes when there is enough evidence | planned |
 | 12 | 8 | Rules file, LLM tail, thresholds on evidence | Thresholds lowered on evidence: more rows pre-marked `a` at measured precision | planned |
-| 13 | 9 | GTK4 rule builder, category indirection, packaging | Distributable to other users | planned |
+| 13 | 9 | GTK4 windows (proposal 0003: Trial with the rule builder first, then Review, Start, Booking), category indirection, packaging | Distributable to other users | planned |
 
 Steps 2 and D2 are the two **decision points**: if either premise fails, the
 design changes before more is built on it.
@@ -111,7 +111,8 @@ Not built early, but the design leaves room for them:
   approval model (section 7.1).
 - **Programmatic creation of simple fixed-amount scheduled transactions** — only
   after the guide-and-verify path is proven.
-- **A TUI review interface** (Textual) — only if the text file repeatedly lacks
+- **A TUI review interface** (Textual) — superseded in proposal 0003 by the
+  GTK4 Review window at step 9, if that proposal is accepted; until then, only if the text file repeatedly lacks
   information needed to decide.
 - **Upstream**: the Bayes-seeding patch and an external-matcher hook in GnuCash
   (proposal 0001, *Parallel track*), independent of everything here.

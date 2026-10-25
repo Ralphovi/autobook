@@ -36,7 +36,7 @@ structure, not a follow-up. It applies from the first PR, with no starting step
 | 2 | [Constraints](02-constraints.md) | Technical, organisational, conventions |
 | 3 | [Context and scope](03-context-and-scope.md) | External partners and what crosses each interface |
 | 4 | [Solution strategy](04-solution-strategy.md) | Quality goals traced to strategies; the shape in one paragraph |
-| 5 | [Building block view](05-building-block-view.md) | Pipeline, book process, launcher, staging; the JSON contracts |
+| 5 | [Building block view](05-building-block-view.md) | Pipeline, book process, launcher, staging; the JSON contracts; the command line and windows (proposal 0003) |
 | 6 | [Runtime view](06-runtime-view.md) | A booking run, statement admission, deciding a row, bill linking, apply and crash recovery, undo, refusal |
 | 7 | [Deployment view](07-deployment-view.md) | Profiles, what gets installed, the reference deployment, platforms |
 | 8 | [Cross-cutting concepts](08-crosscutting-concepts.md) | Money, idempotency, provenance and the version gate, privacy, backend neutrality |
