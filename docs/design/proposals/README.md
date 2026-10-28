@@ -19,6 +19,7 @@ Start one from [`../templates/proposal.md`](../templates/proposal.md).
 |---|-------|----------|
 | [0001](draft/0001-gnucash-auto-booking-pipeline.md) | GnuCash auto-booking pipeline | — |
 | [0002](draft/0002-document-driven-booking-via-paperless.md) | Document-driven booking — statements and bills from paperless-ngx | — |
+| [0003](draft/0003-windowed-interface-and-command-line.md) | Windowed interface, user journey and command line | [#73](https://github.com/Ralphovi/autobook/issues/73) |
 
 ## Accepted
 
@@ -38,6 +39,12 @@ Proposal 0002 amends 0001: for the rows in its *Changes to proposal 0001* table,
 0002 governs. It is accepted separately, when its own premise test — milestone
 D2, the linkage backtest — has reported.
 
-Both proposals describe *what* each build step contains. The order in which the
+Proposal 0003 adds the command-line verbs and their contract, and GTK4 windows
+as a client of them; it amends 0001 in the rows of its *Changes to proposal
+0001* table. It is accepted when the Trial window and the Review window have
+met its graduation criteria at step 9; until then the text review file is the
+only review interface.
+
+The proposals describe *what* each build step contains. The order in which the
 steps are carried out is decided in one place:
 [architecture section 9](../architecture/09-build-order-and-roadmap.md).

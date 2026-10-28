@@ -14,7 +14,7 @@ tags:
 
 | Profile | Where it runs | How the writer avoids the GUI | Notes |
 |---------|---------------|-------------------------------|-------|
-| **Desktop launcher** (default) | The machine where GnuCash is used | Sequencing: the launcher runs before `exec gnucash` | Interactive review in `$EDITOR`; saving the review file is the approval |
+| **Desktop launcher** (default) | The machine where GnuCash is used | Sequencing: the launcher runs before `exec gnucash` | Interactive review in `$EDITOR`, or in the Review window with `autobook gui` (proposal 0003, step 9); saving the review file is the approval either way |
 | **Unattended** **[DEFERRED]** | A homelab host or the same desktop on a timer | `SESSION_NORMAL_OPEN`; `ERR_BACKEND_LOCKED` → deferred exit 0; escalate after repeated deferrals | Deferred beyond v1. Approval is a save of the review file, and a headless run has no editor to save one; nothing may reach the book without it |
 | **Trial only** | Any machine | Never writes | Read-only export, backtest, rule building; runs with GnuCash open. `SESSION_READ_ONLY` ignores the lock, so with an XML book the export reads the last *saved* state, not edits still open in the GUI |
 
