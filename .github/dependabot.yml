@@ -1,3 +1,5 @@
+# Each entry waits 14 days after a release before proposing it (cooldown), so no
+# version younger than two weeks lands. Security updates ignore the cooldown.
 version: 2
 
 updates:
@@ -5,6 +7,8 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 14
     open-pull-requests-limit: 5
     commit-message:
       prefix: "deps"
@@ -13,5 +17,7 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 14
     commit-message:
       prefix: "ci"
