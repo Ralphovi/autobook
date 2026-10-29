@@ -618,6 +618,13 @@ class LoadPrompt(unittest.TestCase):
         raw = (Path(tp.__file__).parent / "prompt.md").read_text(encoding="utf-8")
         self.assertEqual(tp.load_prompt(), raw)
 
+    def test_the_real_prompt_states_the_review_exception(self) -> None:
+        # ADR-0003 section 3: the review's priority holds unless the pull request changed
+        # the impact. The model then reports `none` and the table applies.
+        text = " ".join(tp.load_prompt().split())
+        self.assertIn("keep the review's priority, unless the issue shows the pull request "
+                      "changed the impact; then set it to `none`", text)
+
     def test_the_real_prompt_names_every_field(self) -> None:
         text = tp.load_prompt()
         for name in (*tp.TYPES, *tp.FLAGS, *AREAS, "review_priority", "financial_data",

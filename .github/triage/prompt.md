@@ -55,7 +55,7 @@ Set each flag to true only when the issue text supports it:
 
 ## Deferred review findings
 
-Some issues record a code review finding that was deferred out of a pull request. The body then names the review's priority, for example "Codex review of a pull request (P2, deferred on purpose there)" or a P1 or P2 badge. Set `review_priority` to that priority (`P0` to `P3`). Set it to `none` when the issue states no review priority.
+Some issues record a code review finding that was deferred out of a pull request. The body then names the review's priority, for example "Codex review of a pull request (P2, deferred on purpose there)" or a P1 or P2 badge. Set `review_priority` to that priority (`P0` to `P3`). Deferred review findings keep the review's priority, unless the issue shows the pull request changed the impact; then set it to `none` and place severity and reach as for any other issue. Set it to `none` when the issue states no review priority.
 
 ## When you cannot tell
 
