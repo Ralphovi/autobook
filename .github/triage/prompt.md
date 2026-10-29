@@ -53,6 +53,10 @@ Set each flag to true only when the issue text supports it:
 - `booking_integrity`: the issue is about anything that can write a wrong, duplicated, unapproved or unverified booking, lose a transaction, skip the read-back, corrupt a book or set the reconciled flag.
 - `security_or_privacy`: the issue is about an attack on Autobook, a credential, or financial data (memos, IBANs, account names, document content) reaching anywhere it should not.
 
+## Deferred review findings
+
+Some issues record a code review finding that was deferred out of a pull request. The body then names the review's priority, for example "Codex review of a pull request (P2, deferred on purpose there)" or a P1 or P2 badge. Set `review_priority` to that priority (`P0` to `P3`). Set it to `none` when the issue states no review priority.
+
 ## When you cannot tell
 
 If the text does not let you place severity or reach, set `unsure` to true and say in `missing` what information would settle it. Never pick a lower severity or reach to be safe; leaving it open is the safe choice.
