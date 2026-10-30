@@ -8,4 +8,5 @@ test-matrix (3.13)
 test-matrix (3.14)
 dco
 require-issue
+docs-check
 docs-immutability
