@@ -25,7 +25,8 @@ All under `src/autobook/`, one module per building block. Each stub module sets
 | `pipeline/` | `statement_source`, `admission`, `normaliser`, `correlator`, `bill_matcher`, `classifier`, `model_adapter`, `disposition`, `batch_gate`, `review_file`, `trial` (section 5.2). Never imports `gnucash`. `pipeline/profiles/` is package data, not a block: the normaliser's shipped profiles. |
 | `book/` | `session`, `exporter`, `applier`, `readback`, `assertions`, `undo` (section 5.3). The only package that may import `gnucash`, per file, as each module needs it. |
 
-The launcher (section 5.4) is a shell script, not a Python module. `import
+The launcher (section 5.4) is a shell script, not a Python module. The client
+(section 5.5, proposal 0003) has no package yet; it lands with build step 9. `import
 autobook` does not import the subpackages.
 
 ## 5.1 Three processes and one store
@@ -35,6 +36,7 @@ autobook` does not import the subpackages.
 | **Pipeline** | Python in a virtualenv | **No — enforced by the gate** | Everything from statement to approved proposal |
 | **Book process** | System Python (`python3-gnucash` in `dist-packages`) | Yes, and nothing else does | Every read from and write to a book, in two parts: the **exporter** (read-only, from build step 2) and the **applier** (writes, from build step 5) |
 | **Launcher** | Shell wrapper around `gnucash` | No | Sequencing: backup, read-only export, pipeline, review, apply, assert, open GnuCash |
+| **Client** (proposal 0003, draft) | GTK4 windows; Python with PyGObject | No, and it does not import the pipeline either | Runs `autobook` subcommands with `--json` and renders them; edits the review file; never a second approval path (section 5.5) |
 | **Staging store** | SQLite in `$XDG_DATA_HOME` (default) or a PostgreSQL URI | — | Audit trail, correction corpus, undo list; the seam between classification and writing |
 
 The split between pipeline and book process is load-bearing (proposal 0001,
@@ -332,7 +334,7 @@ builder reports conflicts between any two tiers on historical rows.
   packs. Rules may target a split specification; they are the only tier that
   may. Fixed split amounts are integer cents (`cents: 1250`), never a decimal
   value. Most user rules are **mined from history** and accepted by the user
-  (proposal 0003): creditor-ID and memo-pattern candidates, scored on a held-out
+  (proposal 0004): creditor-ID and memo-pattern candidates, scored on a held-out
   period, with `created-by: mined` and `mined_cutoff`. Mining never produces a
   split specification.
 - **kNN.** Character n-gram TF-IDF (term frequency–inverse document frequency;
@@ -497,7 +499,7 @@ the memo was seen before in the index or is novel; gate thresholds are set on th
 **novel** stratum. Leave-one-out remains only as an upper bound and for the rule
 builder's quick "matches N historical rows" verdict. Also the **rule miner**
 (candidates from history, scored on a held-out period, accepted in a text file;
-proposal 0003), the **rule builder** (cluster, propose, backtest immediately,
+proposal 0004), the **rule builder** (cluster, propose, backtest immediately,
 accept — GTK4 eventually, CLI first), the
 **assistant detector** (recurring debits and loan-shaped payments handed to
 GnuCash's assistants), the **pack validator**, and from proposal 0002 the
@@ -612,3 +614,36 @@ each step runs as `step || notify`, the steps run inside a function, and a
 
 Unattended runs (homelab, no editor) are **[DEFERRED]** beyond v1: approval is a
 save of the review file, which needs a human (section 7).
+
+## 5.5 Command line and windows (proposal 0003)
+
+> Designed in [proposal 0003](../proposals/draft/0003-windowed-interface-and-command-line.md),
+> still `draft`. Where this section and the proposal disagree, the proposal
+> governs.
+
+**The command line is the primary interface.** Every step of the journey is an
+`autobook` subcommand: `run` (the launcher's sequence), `gui`, `backup`,
+`export`, `propose`, `pending`, `review-file`, `decide --from`, `apply --from`,
+`undo`, `status`, `trial backtest` / `trial accept`, `rules cluster` / `test` /
+`accept`, `assistants` (proposal 0003 §2.1). With `--json`, stdout is one
+versioned contract document and messages go to stderr; no command prompts
+without a TTY; exit codes are 0 done, 1 nothing to do, 2 usage or input error,
+3 gate refused, 4 book locked, 5 review file did not parse, 6 assertion or
+read-back failed (§2.3).
+
+**The windows are a client of the command line.** GTK4 windows — Start, Review,
+Booking, the refusal dialog and Trial (Backtest, Rule Builder, Assistants) —
+run the subcommands as subprocesses and render their `--json` output. The
+client imports only `autobook.contracts`; it never imports `gnucash` or the
+pipeline.
+
+**The review file is the Review window's state.** The window loads
+`autobook review-file`, edits its lines, renders the list from parsing that
+text, and hands it to `autobook decide --from` (*Save Decisions*) or
+`autobook apply --from` (*Approve and Book*). Saving the review file stays the
+approval in both surfaces; there is no other path from a window to staging or a
+book. *Open in Editor…* blocks the window while `$EDITOR` has the file and
+re-parses on return.
+
+`autobook gui` is the launcher with the Review window as its review step and
+keeps the launcher's invariant: it always reaches `exec gnucash`.

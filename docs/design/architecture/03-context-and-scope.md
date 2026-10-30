@@ -41,6 +41,7 @@ See [`diagrams/c4-context.mermaid`](diagrams/c4-context.mermaid) for the diagram
 | Model backend | Request/response | Normalised merchant token, amount, sign, live account list as numeric indices | Optional; local by default. A remote backend is opt-in and gets only tokens that match a rule-pack entry or the user's allowlist; account names never leave the machine (section 8.5). Output validated against the live account tree |
 | Secret Service | Read | paperless token, model API key, PostgreSQL book credentials | Never in config files or the repository |
 | `$EDITOR` | Launcher spawns | The review file, at `$XDG_RUNTIME_DIR/autobook/review.txt`, mode `0600` | Saving it approves every row marked `a`; parsed strictly by ID on return |
+| Autobook windows (proposal 0003, draft) | `autobook gui` runs them in place of `$EDITOR` | The same review file, edited line by line; `--json` output of the subcommands | A client of the command line: *Approve and Book* writes the review file and runs `autobook apply --from` on it (section 5.5) |
 | Notifier | Write | Failure and refusal messages, no transaction data | Configurable command |
 | Rule packs | Read | Pattern → semantic category, ambiguity flags | Separate repository; pinned or signed; validated against local history before enabling |
 

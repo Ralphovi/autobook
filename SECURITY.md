@@ -48,7 +48,7 @@ Please report suspected vulnerabilities **privately**, not via a public issue or
 pull request.
 
 Use GitHub's [private vulnerability reporting](https://github.com/Ralphovi/autobook/security/advisories/new)
-for this repository, or email **eduard@ralphovi.net**, with:
+for this repository, or email **policy@ralphovi.net**, with:
 
 - a description of the issue and its impact,
 - the steps or proof-of-concept needed to reproduce it, and
