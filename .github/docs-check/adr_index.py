@@ -183,6 +183,7 @@ def check(root: str, tracked: list[str]) -> list[str]:
     by_num = {a["num"]: name for name, a in adrs.items()}
     listed: dict[str, int] = {}
     shown_as: dict[str, str | None] = {}  # file name -> status the index shows
+    successors_shown: dict[str, set[int]] = {}  # file name -> successors its row names
     for line, target, status_cell in rows:
         where = f"{INDEX}:{line}"
         name = posixpath.basename(target)
@@ -205,6 +206,7 @@ def check(root: str, tracked: list[str]) -> list[str]:
             )
         if adr["status"] == "Superseded" or shown == "Superseded":
             named = numbers(" ".join(words[1:]))
+            successors_shown[name] = named
             if not named:
                 problems.append(f"{where}: superseded ADR {adr['num']:04d} must name its "
                                 "successor (`Superseded by NNNN`)")
@@ -235,6 +237,10 @@ def check(root: str, tracked: list[str]) -> list[str]:
                     problems.append(f"{old['path']}: still {old['status']}, but Accepted "
                                     f"ADR {adr['num']:04d} supersedes it; show it "
                                     f"`Superseded by {adr['num']:04d}` in the index")
+                elif (old_name := posixpath.basename(old["path"])) in listed \
+                        and adr["num"] not in successors_shown.get(old_name, set()):
+                    problems.append(f"{INDEX}:{listed[old_name]}: the row for {n:04d} does not "
+                                    f"name {adr['num']:04d}, which supersedes it")
     return problems
 
 

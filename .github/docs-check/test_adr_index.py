@@ -123,6 +123,10 @@ MUST_FAIL = {
     "Proposed file shown Superseded in the index": (
         with_index(GOOD, replace_row("0002", "| [0002](0002-license.md) | License | Superseded by [0004](0004-new-way.md) |")),
         "status `Superseded by 0004` differs from the file's `Proposed`"),
+    "a second successor the superseded row does not name": (
+        with_index({**GOOD, f"{ADR}/0005-newer-way.md": adr("0005", "Newer way", "Accepted", "supersedes: ADR-0003\n")},
+                   GOOD_ROWS + ["| [0005](0005-newer-way.md) | Newer way | Accepted |"]),
+        "the row for 0003 does not name 0005, which supersedes it"),
     "accepted ADR supersedes one not stamped": (
         with_index({**GOOD, f"{ADR}/0002-license.md": adr("0002", "License", "Accepted", "supersedes: 0001\n")},
                    replace_row("0002", "| [0002](0002-license.md) | License | Accepted |")),
