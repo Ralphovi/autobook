@@ -12,14 +12,16 @@ name: docs-immutability
 # and draft -> stable transitions legal while freezing the record from that
 # point on. Adding new documents and editing indexes/READMEs stays allowed.
 #
-# Supersession carve-out: a frozen document (Accepted ADR/proposal, stable spec)
-# MAY be edited in exactly one narrow way — a *supersession stamp* that flips its
-# `status:` to `Superseded` and, optionally, adds a `superseded-by:` frontmatter
-# field. Everything else in the file (the whole body, all other frontmatter) must
-# be byte-for-byte unchanged, and the stamp is one-way (a Superseded base is
-# frozen again). This lets the final "-> Superseded" transition in each lifecycle
-# above be recorded on the document itself; every other edit to a frozen document
-# still fails.
+# Supersession: an Accepted ADR or accepted proposal is never edited, not even to
+# mark it superseded. Its successor carries `supersedes:` and the index/README
+# records the supersession (AGENTS.md, ADR-0001).
+#
+# Spec carve-out: a stable spec MAY be edited in exactly one narrow way — a
+# *supersession stamp* that flips its `status:` to `Superseded` and, optionally,
+# adds a `superseded-by:` frontmatter field. Everything else in the file (the
+# whole body, all other frontmatter) must be byte-for-byte unchanged, and the
+# stamp is one-way (a Superseded base is frozen again). Every other edit to a
+# frozen document still fails.
 #
 # Migration note: legacy records with no YAML frontmatter are outside this
 # regime until converted. Once converted, a non-editable base status freezes the
@@ -67,7 +69,7 @@ jobs:
               NR==1 && $0=="---" { infm=1; next }
               infm && /^---[[:space:]]*$/ { exit }
               infm && tolower($0) ~ /^status:/ {
-                sub(/^[^:]*:[[:space:]]*/, ""); print; exit
+                sub(/^[^:]*:[[:space:]]*/, ""); sub(/[[:space:]]*#.*$/, ""); print; exit
               }')
             [ -n "$status" ] || status="unknown"
             printf '%s' "$status"
@@ -123,6 +125,10 @@ jobs:
               docs/design/adr/[0-9]*.md|docs/design/proposals/draft/[0-9]*.md|docs/design/proposals/accepted/[0-9]*.md)
                 status_from_base "$path"
                 ;;
+              # Spec indexes are not specs: they have no `status:` and stay editable.
+              docs/design/specs/README.md|docs/design/specs/*/README.md)
+                return 1
+                ;;
               docs/design/specs/*)
                 governing_spec=$(governing_spec_for "$path") || return 1
                 status_from_base "$governing_spec"
@@ -150,15 +156,12 @@ jobs:
             esac
           }
 
-          # The frozen status that a class transitions *out of* into Superseded:
-          # ADRs and proposals from `accepted`, specs from `stable`. Only the
-          # document file itself (a numbered *.md, or a spec *.md) can be stamped
-          # — never a spec conformance asset, whose supersession is expressed by
-          # superseding its governing spec.
+          # The frozen status a spec transitions *out of* into Superseded: `stable`.
+          # Only a spec *.md itself can be stamped — never a spec conformance
+          # asset, whose supersession is expressed by superseding its governing
+          # spec. ADRs and proposals are never stamped (see the header).
           frozen_source_status() {
             case "$1" in
-              docs/design/adr/[0-9]*.md) printf 'accepted' ;;
-              docs/design/proposals/draft/[0-9]*.md|docs/design/proposals/accepted/[0-9]*.md) printf 'accepted' ;;
               docs/design/specs/*.md) printf 'stable' ;;
               *) return 1 ;;
             esac
