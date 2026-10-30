@@ -8,11 +8,16 @@ payees and memos are invented, as the repository's fixtures must be (AGENTS.md).
 
 from __future__ import annotations
 
+import ast
 import json
+import subprocess
 import sys
+import tempfile
 import unittest
-from unittest import mock
+from dataclasses import asdict
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import triage_priority as tp  # noqa: E402
@@ -25,7 +30,7 @@ NO_FLAGS = {f: False for f in tp.FLAGS}
 def verdict(**over) -> dict:
     v = {
         "type": "bug", "severity": "critical", "reach": "edge", "areas": ["correlator"],
-        "flags": dict(NO_FLAGS), "unsure": False, "missing": "",
+        "flags": dict(NO_FLAGS), "review_priority": "none", "unsure": False, "missing": "",
         "financial_data": False, "secret_in_issue": False, "vulnerability_report": False,
         "reasons": {"type": "Autobook books a transfer the wrong way.",
                     "severity": "A transfer is booked from both statements, so it is booked twice.",
@@ -50,6 +55,10 @@ def plan(i: tp.Issue | None = None, **v) -> tp.Plan:
                          model=tp.MODEL, usage="1 in, 1 out", truncated=False)
 
 
+def prio(severity, reach, flags=None, review="none", labels=()):
+    return tp.compute_priority(severity, reach, flags or NO_FLAGS, review, set(labels))
+
+
 class Table(unittest.TestCase):
     def test_matches_adr_0003(self) -> None:
         expected = {
@@ -60,41 +69,67 @@ class Table(unittest.TestCase):
         }
         for (sev, reach), p in expected.items():
             with self.subTest(sev=sev, reach=reach):
-                self.assertEqual(tp.compute_priority(sev, reach, NO_FLAGS, set())[0], p)
+                self.assertEqual(prio(sev, reach)[0], p)
 
     def test_privacy_lifts_adversarial_major_to_p1(self) -> None:
-        prio, base, applied = tp.compute_priority(
-            "major", "adversarial", dict(NO_FLAGS, security_or_privacy=True), set())
-        self.assertEqual((prio, base), (1, 2))
-        self.assertIn("security or privacy", applied[0])
+        p, base, notes = prio("major", "adversarial", dict(NO_FLAGS, security_or_privacy=True))
+        self.assertEqual((p, base), (1, 2))
+        self.assertIn("security or privacy", notes[0])
 
     def test_booking_integrity_lifts_edge_minor_to_p1(self) -> None:
-        flags = dict(NO_FLAGS, booking_integrity=True)
-        self.assertEqual(tp.compute_priority("minor", "edge", flags, set())[0], 1)
+        p, _, notes = prio("minor", "edge", dict(NO_FLAGS, booking_integrity=True))
+        self.assertEqual(p, 1)
+        self.assertIn("booking-integrity", notes[0])
 
     def test_floor_never_lowers(self) -> None:
-        flags = dict(NO_FLAGS, booking_integrity=True)
-        prio, _, applied = tp.compute_priority("critical", "common", flags, set())
-        self.assertEqual((prio, applied), (0, []))
+        p, _, notes = prio("critical", "common", dict(NO_FLAGS, booking_integrity=True))
+        self.assertEqual((p, notes), (0, []))
 
     def test_unrelated_labels_are_not_floors(self) -> None:
-        for label in ("release-gating", "human-run", "build-order"):
+        # Autobook has no label floors; another repository's floor labels do nothing here.
+        for label in ("release-gating", "accessibility", "human-run", "build-order",
+                      "booking_integrity", "security_or_privacy"):
             with self.subTest(label=label):
-                self.assertEqual(tp.compute_priority("trivial", "common", NO_FLAGS, {label})[0], 3)
+                self.assertEqual(prio("trivial", "common", labels={label})[0], 3)
+
+    def test_review_priority_is_kept(self) -> None:
+        # A minor/edge deferred review finding: P3 by the table, P2 from the review.
+        p, base, notes = prio("minor", "edge", review="P2")
+        self.assertEqual((p, base), (2, 3))
+        self.assertIn("deferred review", notes[0])
+
+    def test_review_priority_can_lower_the_table(self) -> None:
+        self.assertEqual(prio("major", "common", review="P2")[0], 2)
+
+    def test_floors_apply_after_the_review_priority(self) -> None:
+        p, _, notes = prio("major", "adversarial", dict(NO_FLAGS, security_or_privacy=True),
+                           review="P2")
+        self.assertEqual(p, 1)
+        self.assertEqual(len(notes), 1)  # the review agrees with the table; only the floor
+
+    def test_a_floor_raises_a_lower_review_priority(self) -> None:
+        p, _, notes = prio("minor", "edge", dict(NO_FLAGS, booking_integrity=True), review="P3")
+        self.assertEqual(p, 1)
+        self.assertIn("booking-integrity", notes[-1])
 
     def test_every_flag_has_a_floor(self) -> None:
         self.assertLessEqual(set(tp.FLAGS), set(tp.FLOORS))
+
+    def test_every_type_gets_a_priority(self) -> None:
+        # ADR-0003 section 4 places every issue, not only bugs.
+        self.assertEqual(set(tp.PRIORITISED_TYPES), set(tp.TYPES))
 
 
 class Validate(unittest.TestCase):
     def test_rejects_unknown_values(self) -> None:
         for bad in ({"severity": "blocker"}, {"reach": "rare"}, {"type": "research"},
-                    {"areas": ["kernel"]}):
+                    {"type": "chore"}, {"areas": ["kernel"]}, {"review_priority": "P4"}):
             with self.subTest(bad=bad), self.assertRaises(tp.InvalidVerdict):
                 tp.validate(verdict(**bad), AREAS)
 
     def test_rejects_missing_fields(self) -> None:
-        for field in ("flags", "financial_data", "secret_in_issue", "vulnerability_report"):
+        for field in ("flags", "review_priority", "financial_data", "secret_in_issue",
+                      "vulnerability_report"):
             v = verdict()
             del v[field]
             with self.subTest(field=field), self.assertRaises(tp.InvalidVerdict):
@@ -104,10 +139,18 @@ class Validate(unittest.TestCase):
         got = tp.validate(verdict(areas=["correlator", "book", "review"]), AREAS)["areas"]
         self.assertEqual(got, ["correlator", "book"])
 
+    def test_no_area_is_allowed(self) -> None:
+        self.assertEqual(tp.validate(verdict(areas=[]), AREAS)["areas"], [])
+
+    def test_vulnerability_report_sets_the_security_flag(self) -> None:
+        got = tp.validate(verdict(vulnerability_report=True), AREAS)
+        self.assertTrue(got["flags"]["security_or_privacy"])
+
     def test_schema_enums_match_config(self) -> None:
         schema = tp.verdict_schema(AREAS)
         self.assertEqual(schema["properties"]["areas"]["items"]["enum"], AREAS)
         self.assertEqual(set(schema["required"]), set(schema["properties"]))
+        self.assertEqual(set(schema["properties"]["flags"]["properties"]), set(tp.FLAGS))
 
     def test_types_exist_as_repository_labels(self) -> None:
         # Autobook has `spike`, not `research`; the bot must only add labels that exist.
@@ -189,6 +232,10 @@ class Notes(unittest.TestCase):
         p = plan(vulnerability_report=True, unsure=True, missing="Which memo field leaks.")
         self.assertNotIn("memo field", p.comment)
 
+    def test_financial_data_hides_what_is_missing(self) -> None:
+        p = plan(financial_data=True, unsure=True, missing="Whether Praxis Imaginary is a payee.")
+        self.assertNotIn("Imaginary", p.comment)
+
     def test_secret_note_asks_to_rotate(self) -> None:
         self.assertIn("rotate", plan(secret_in_issue=True).comment)
 
@@ -218,21 +265,9 @@ class RealIban(unittest.TestCase):
 
     def test_unicode_letters_do_not_break_the_check(self) -> None:
         # U+212A KELVIN SIGN and U+0130 fold to K and i under Unicode case-insensitivity.
-        for text in ("\u212aB121234567890123", "\u0130B121234567890123 and more"):
+        for text in ("KB121234567890123", "İB121234567890123 and more"):
             with self.subTest(text=text):
                 self.assertFalse(tp.contains_real_iban(text))
-
-    def test_held_back_issue_keeps_the_retry_on_an_edit(self) -> None:
-        # An edit that adds a real IBAN to an issue at needs-triage: the hold-back note
-        # must reach apply() with retry set, or apply() skips the issue as already triaged.
-        edited = issue(body=f"From {self.EXAMPLE}.", labels={"needs-triage"}, triage_count=1)
-        with mock.patch.dict(sys.modules, {"anthropic": mock.MagicMock()}), \
-                mock.patch.object(tp, "ensure_labels"), \
-                mock.patch.object(tp, "fetch_issue", return_value=edited), \
-                mock.patch.object(tp, "apply") as applied:
-            tp.main(["--issue", "7", "--repo", "o/r", "--retry"])
-        applied.assert_called_once()
-        self.assertTrue(applied.call_args.kwargs.get("retry"))
 
     def test_made_up_iban_is_classified(self) -> None:
         self.assertFalse(tp.contains_real_iban("From DE00 1234 5678 9012 3456 78, booked twice."))
@@ -243,10 +278,88 @@ class RealIban(unittest.TestCase):
                 self.assertFalse(tp.contains_real_iban(text))
 
     def test_held_back_plan_asks_for_synthetic_data_and_classifies_nothing(self) -> None:
-        p = tp.held_back_plan()
-        self.assertEqual(p.add_labels, ["needs-triage"])
+        p = tp.held_back_plan(issue(number=12))
+        self.assertEqual((p.number, p.add_labels), (12, ["needs-triage"]))
         self.assertIn("not sent to the model", p.comment)
         self.assertTrue(p.comment.startswith(tp.MARKER))
+
+    def test_held_back_plan_passes_the_apply_check(self) -> None:
+        p = tp.held_back_plan(issue())
+        self.assertEqual(tp.check_plan(asdict(p), CONFIG), p)
+
+    def test_classify_issue_refuses_a_real_iban(self) -> None:
+        client = mock.MagicMock()
+        for i in (issue(body=f"From {self.EXAMPLE}."), issue(title=f"IBAN {self.EXAMPLE}")):
+            with self.subTest(i=i), self.assertRaises(ValueError):
+                tp.classify_issue(client, "rules", i, AREAS)
+        client.beta.messages.create.assert_not_called()
+
+    def run_classify(self, found: tp.Issue, retry: bool) -> tuple[mock.MagicMock, list]:
+        """Run the classify command on one issue with a fake SDK; return the client and
+        the plans it wrote."""
+        sdk = mock.MagicMock()
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.dict(sys.modules, {"anthropic": sdk}), \
+                mock.patch.object(tp, "fetch_issue", return_value=found):
+            out = Path(d) / "plan.json"
+            args = ["--repo", "o/r", "classify", "--issue", str(found.number), "--out", str(out)]
+            tp.main(args + (["--retry"] if retry else []))
+            written = json.loads(out.read_text(encoding="utf-8"))
+        return sdk.Anthropic.return_value, written
+
+    def test_classify_never_sends_a_real_iban_to_the_model(self) -> None:
+        client, written = self.run_classify(issue(body=f"Booked from {self.EXAMPLE}."), False)
+        client.beta.messages.create.assert_not_called()
+        self.assertEqual(len(written), 1)
+        self.assertEqual(written[0]["add_labels"], ["needs-triage"])
+        self.assertIn("not sent to the model", written[0]["comment"])
+
+    def test_held_back_issue_keeps_the_retry_on_an_edit(self) -> None:
+        # An edit that adds a real IBAN to an issue at needs-triage: the hold-back plan is
+        # written, and the apply step must not skip the issue as already triaged.
+        edited = issue(body=f"From {self.EXAMPLE}.", labels={"needs-triage"}, triage_count=1)
+        client, written = self.run_classify(edited, True)
+        client.beta.messages.create.assert_not_called()
+        self.assertEqual(len(written), 1)
+        calls = []
+        with mock.patch.object(tp, "fetch_issue", return_value=edited), \
+                mock.patch.object(tp, "gh", side_effect=lambda *a, **k: calls.append(a) or ""):
+            tp.apply_plan("o/r", tp.check_plan(written[0], CONFIG))
+        self.assertTrue(any(a[:2] == ("issue", "comment") for a in calls))
+
+    def test_classify_keeps_plans_when_a_later_issue_cannot_be_read(self) -> None:
+        held = issue(number=1, body=f"From {self.EXAMPLE}.")
+        def fetch(repo: str, number: int) -> tp.Issue:
+            if number == 1:
+                return held
+            raise subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 503")
+        sdk = mock.MagicMock()
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.dict(sys.modules, {"anthropic": sdk}), \
+                mock.patch.object(tp, "open_untriaged", return_value=[1, 2]), \
+                mock.patch.object(tp, "fetch_issue", side_effect=fetch):
+            out = Path(d) / "plan.json"
+            with self.assertRaises(subprocess.CalledProcessError):
+                tp.main(["--repo", "o/r", "classify", "--all", "--out", str(out)])
+            written = json.loads(out.read_text(encoding="utf-8"))
+        self.assertEqual([p["number"] for p in written], [1])
+
+    def test_classify_sends_an_ordinary_issue(self) -> None:
+        sdk = mock.MagicMock()
+        response = SimpleNamespace(
+            usage=SimpleNamespace(input_tokens=10, cache_read_input_tokens=0,
+                                  cache_creation_input_tokens=0, output_tokens=5),
+            model=tp.MODEL, stop_reason="end_turn",
+            content=[SimpleNamespace(type="text", text=json.dumps(verdict()))])
+        sdk.Anthropic.return_value.beta.messages.create.return_value = response
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.dict(sys.modules, {"anthropic": sdk}), \
+                mock.patch.object(tp, "fetch_issue", return_value=issue()):
+            out = Path(d) / "plan.json"
+            tp.main(["--repo", "o/r", "classify", "--issue", "7", "--out", str(out)])
+            written = json.loads(out.read_text(encoding="utf-8"))
+        sdk.Anthropic.return_value.beta.messages.create.assert_called_once()
+        self.assertIn("priority:P1", written[0]["add_labels"])
 
 
 class Skip(unittest.TestCase):
@@ -287,12 +400,16 @@ class Skip(unittest.TestCase):
                     {"body": None, "user": None}]
         self.assertEqual(tp.triage_comments(comments), 1)
 
+    def test_marker_is_unchanged(self) -> None:
+        # Earlier triage comments carry this marker; a new one would triage them again.
+        self.assertEqual(tp.MARKER, "<!-- autobook-triage -->")
+
     def test_fresh_issue_is_triaged(self) -> None:
         self.assertIsNone(tp.skip_reason(issue()))
 
 
 class Backfill(unittest.TestCase):
-    """The back-fill limit counts only issues that will be triaged (Codex P1 on #944)."""
+    """The back-fill limit counts only issues that will be triaged."""
 
     def test_already_triaged_issues_do_not_fill_the_batch(self) -> None:
         listed = [{"number": n, "labels": []} for n in range(1, 8)]
@@ -326,11 +443,13 @@ class ClearsNeedsTriage(unittest.TestCase):
 class BuildPlan(unittest.TestCase):
     def test_labels_and_priority(self) -> None:
         p = plan()
+        self.assertEqual(p.number, 7)
         self.assertEqual(p.add_labels,
                          ["bug", "area:correlator", "sev:critical", "reach:edge", "priority:P1"])
         self.assertEqual(p.assignee, "eduralph")
         self.assertTrue(p.comment.startswith(tp.MARKER))
         self.assertIn("critical × edge is P1", p.comment)
+        self.assertIn("ADR-0003", p.comment)
 
     def test_label_descriptions_fit_github_limit(self) -> None:
         for group in ("severity", "reach", "area", "priority", "other"):
@@ -342,11 +461,9 @@ class BuildPlan(unittest.TestCase):
         mine = {n for g in ("severity", "reach", "area", "priority", "other") for n in CONFIG[g]}
         self.assertFalse(mine & {"build-order", "no-code", "spike", "human-run", "new"})
 
-    def test_every_label_it_adds_exists_in_config(self) -> None:
-        known = {n for g in ("severity", "reach", "area", "priority", "other") for n in CONFIG[g]}
-        known |= set(tp.TYPES)
-        p = plan(i=issue(), flags=dict(NO_FLAGS, booking_integrity=True), areas=["book", "review"])
-        self.assertLessEqual(set(p.add_labels), known)
+    def test_every_label_it_adds_is_allowed(self) -> None:
+        p = plan(flags=dict(NO_FLAGS, booking_integrity=True), areas=["book", "review"])
+        self.assertLessEqual(set(p.add_labels), tp.allowed_labels(CONFIG))
 
     def test_keeps_existing_type_and_assignee(self) -> None:
         p = plan(i=issue(labels={"enhancement"}, assignees=["someone"]))
@@ -357,6 +474,17 @@ class BuildPlan(unittest.TestCase):
     def test_no_type_note_when_the_label_agrees(self) -> None:
         self.assertNotIn("reads more like", plan(i=issue(labels={"bug"})).comment)
 
+    def test_every_type_gets_a_priority(self) -> None:
+        for kind in ("enhancement", "documentation", "spike"):
+            with self.subTest(kind=kind):
+                p = plan(type=kind, severity="minor", reach="common")
+                self.assertIn(kind, p.add_labels)
+                self.assertIn("priority:P2", p.add_labels)
+
+    def test_existing_spike_label_still_gets_a_priority(self) -> None:
+        p = plan(i=issue(labels={"spike"}), severity="trivial", reach="common")
+        self.assertIn("priority:P3", p.add_labels)
+
     def test_unsure_sets_needs_triage_and_no_priority(self) -> None:
         p = plan(unsure=True, missing="Whether the book is XML or SQL.")
         self.assertIn("needs-triage", p.add_labels)
@@ -365,12 +493,17 @@ class BuildPlan(unittest.TestCase):
     def test_override_is_explained(self) -> None:
         p = plan(severity="minor", reach="edge", flags=dict(NO_FLAGS, booking_integrity=True))
         self.assertIn("priority:P1", p.add_labels)
-        self.assertIn("Raised by: booking-integrity bug", p.comment)
+        self.assertIn("booking-integrity bug (at least P1)", p.comment)
 
     def test_vulnerability_report_gets_the_security_floor(self) -> None:
         p = plan(severity="trivial", reach="adversarial", vulnerability_report=True)
         self.assertIn("priority:P1", p.add_labels)
         self.assertIn("security or privacy bug", p.comment)
+
+    def test_review_priority_is_explained(self) -> None:
+        p = plan(severity="minor", reach="edge", review_priority="P2")
+        self.assertIn("priority:P2", p.add_labels)
+        self.assertIn("kept the deferred review's P2", p.comment)
 
     def test_financial_data_withholds_every_reason(self) -> None:
         # A short payee name slips past the echo check; with the flag set, no reason is posted.
@@ -393,6 +526,16 @@ class BuildPlan(unittest.TestCase):
         self.assertNotIn("huntertwo", p.comment)
         self.assertIn("rotate", p.comment)
 
+    def test_longest_comment_fits_the_apply_check(self) -> None:
+        long = "word " * 60
+        p = tp.build_plan(issue(labels={"enhancement"}), tp.validate(verdict(
+            areas=["book", "review"], vulnerability_report=True, financial_data=True,
+            secret_in_issue=True, review_priority="P3",
+            flags={f: True for f in tp.FLAGS},
+            reasons={k: long for k in verdict()["reasons"]}), AREAS), CONFIG,
+            model=tp.MODEL, usage="1 in, 1 out", truncated=True)
+        self.assertEqual(tp.check_plan(asdict(p), CONFIG), p)
+
     def test_never_touches_the_milestone(self) -> None:
         self.assertFalse(hasattr(plan(), "milestone"))
 
@@ -404,8 +547,135 @@ class BuildPlan(unittest.TestCase):
 
     def test_unclassified_plan(self) -> None:
         p = tp.unclassified_plan(issue(), "the model declined to classify it", model="m", usage="u")
-        self.assertEqual(p.add_labels, ["needs-triage"])
+        self.assertEqual((p.number, p.add_labels), (7, ["needs-triage"]))
         self.assertIn(tp.MARKER, p.comment)
+
+
+class ApplyCheck(unittest.TestCase):
+    """The apply job treats the classify job's plan as data and checks it again."""
+
+    def entry(self, **over) -> dict:
+        e = {"number": 7, "add_labels": ["bug", "area:correlator", "sev:critical", "reach:edge",
+                                         "priority:P1"],
+             "remove_labels": [], "assignee": "eduralph", "comment": tp.MARKER + "\nok\n",
+             "retry": False, "triage_count": 0}
+        e.update(over)
+        return e
+
+    def test_a_built_plan_passes(self) -> None:
+        p = plan(severity="minor", reach="edge", review_priority="P2")
+        self.assertEqual(tp.check_plan(asdict(p), CONFIG), p)
+        self.assertEqual(tp.check_plan(self.entry(), CONFIG).number, 7)
+
+    def test_retry_and_triage_count_are_checked(self) -> None:
+        for over in ({"retry": "yes"}, {"triage_count": -1}, {"triage_count": True}):
+            with self.subTest(over=over), self.assertRaises(tp.InvalidPlan):
+                tp.check_plan(self.entry(**over), CONFIG)
+
+    def apply_to(self, p: tp.Plan, fresh: tp.Issue) -> list:
+        calls = []
+        with mock.patch.object(tp, "fetch_issue", return_value=fresh), \
+                mock.patch.object(tp, "gh", side_effect=lambda *a, **k: calls.append(a) or ""):
+            tp.apply_plan("o/r", p)
+        return calls
+
+    def test_apply_skips_a_plan_another_run_overtook(self) -> None:
+        # A back-fill and an issue event classified the same issue; the other one applied
+        # first, so this plan must not post a second comment.
+        p = tp.check_plan(self.entry(retry=True, triage_count=1), CONFIG)
+        self.assertEqual(self.apply_to(p, issue(number=7, triage_count=2, labels={"needs-triage"})), [])
+
+    def test_apply_keeps_the_classify_runs_retry(self) -> None:
+        # A plan made without an edit never retries an issue already triaged.
+        p = tp.check_plan(self.entry(retry=False, triage_count=1), CONFIG)
+        self.assertEqual(self.apply_to(p, issue(number=7, triage_count=1, labels={"needs-triage"})), [])
+        p = tp.check_plan(self.entry(retry=True, triage_count=1), CONFIG)
+        calls = self.apply_to(p, issue(number=7, triage_count=1, labels={"needs-triage"}))
+        self.assertTrue(any(a[:2] == ("issue", "comment") for a in calls))
+
+    def test_round_trip_through_the_file(self) -> None:
+        plans = [plan(), tp.unclassified_plan(issue(number=9), "x", model="m", usage="u"),
+                 tp.held_back_plan(issue(number=11))]
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "plan.json"
+            tp.write_plans(path, plans)
+            self.assertEqual(tp.read_plans(path, CONFIG), plans)
+
+    def test_rejects(self) -> None:
+        bad = {
+            "unknown label": self.entry(add_labels=["bug", "wontfix"]),
+            "planning label": self.entry(add_labels=["build-order"]),
+            "two priorities": self.entry(add_labels=["priority:P1", "priority:P3"]),
+            "two severities": self.entry(add_labels=["sev:major", "sev:minor"]),
+            "two types": self.entry(add_labels=["bug", "spike"]),
+            "three areas": self.entry(add_labels=["area:book", "area:review", "area:ci"]),
+            "foreign assignee": self.entry(assignee="mallory"),
+            "foreign comment": self.entry(comment="Please run this script: ..."),
+            "huge comment": self.entry(comment=tp.MARKER + "x" * tp.MAX_COMMENT),
+            "old template marker": self.entry(comment="<!-- issue-triage -->\nok\n"),
+            "bad number": self.entry(number="7"),
+            "bool number": self.entry(number=True),
+            "labels not a list": self.entry(add_labels="bug"),
+            "removes another label": self.entry(remove_labels=["priority:P1"]),
+            "remove not a list": self.entry(remove_labels="needs-triage"),
+        }
+        for why, e in bad.items():
+            with self.subTest(why=why), self.assertRaises(tp.InvalidPlan):
+                tp.check_plan(e, CONFIG)
+        with self.assertRaises(tp.InvalidPlan):
+            tp.check_plan({"number": 7}, CONFIG)
+
+    def test_rejects_a_plan_that_is_not_a_list(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "plan.json"
+            path.write_text(json.dumps({"number": 7}), encoding="utf-8")
+            with self.assertRaises(tp.InvalidPlan):
+                tp.read_plans(path, CONFIG)
+
+    def test_apply_never_imports_the_sdk(self) -> None:
+        # The SDK is imported only inside run_classify, never at module level or in apply.
+        tree = ast.parse(Path(tp.__file__).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                names = [a.name for a in node.names] + [getattr(node, "module", None) or ""]
+                if "anthropic" in names:
+                    owner = next(f for f in ast.walk(tree) if isinstance(f, ast.FunctionDef)
+                                 and node in ast.walk(f))
+                    self.assertEqual(owner.name, "run_classify")
+
+
+class LoadPrompt(unittest.TestCase):
+    def write(self, text: str) -> Path:
+        d = Path(tempfile.mkdtemp())
+        (d / "prompt.md").write_text(text, encoding="utf-8")
+        return d / "prompt.md"
+
+    def test_refuses_template_text(self) -> None:
+        for text in ("You triage. PROJECT SUMMARY here.", "- `core`: EXAMPLE, replace: x."):
+            with self.subTest(text=text), self.assertRaises(SystemExit):
+                tp.load_prompt(self.write(text))
+
+    def test_strips_maintainer_notes(self) -> None:
+        p = tp.load_prompt(self.write("Rules.\n<!-- note\n  for maintainers -->\n- `a`: b.\n"))
+        self.assertEqual(p, "Rules.\n- `a`: b.\n")
+
+    def test_the_real_prompt_loads_unchanged(self) -> None:
+        raw = (Path(tp.__file__).parent / "prompt.md").read_text(encoding="utf-8")
+        self.assertEqual(tp.load_prompt(), raw)
+
+    def test_the_real_prompt_states_the_review_exception(self) -> None:
+        # ADR-0003 section 3: the review's priority holds unless the pull request changed
+        # the impact. The model then reports `none` and the table applies.
+        text = " ".join(tp.load_prompt().split())
+        self.assertIn("keep the review's priority, unless the issue shows the pull request "
+                      "changed the impact; then set it to `none`", text)
+
+    def test_the_real_prompt_names_every_field(self) -> None:
+        text = tp.load_prompt()
+        for name in (*tp.TYPES, *tp.FLAGS, *AREAS, "review_priority", "financial_data",
+                     "secret_in_issue", "vulnerability_report", "unsure", "missing"):
+            with self.subTest(name=name):
+                self.assertIn(f"`{name}`", text)
 
 
 if __name__ == "__main__":

@@ -1,21 +1,28 @@
 #!/usr/bin/env python3
-"""Automated issue triage (ADR-0003 sections 4 and 5).
+"""Automated issue priority triage (ADR-0003 sections 4 and 5).
 
-For each issue that has no `priority:*` label, ask Claude once to classify it (type,
-severity, reach, area, override flags), then compute the priority HERE from ADR-0003's
-table and overrides, and apply labels, an assignee and one comment with `gh`.
+Two commands, run by two jobs of .github/workflows/triage-priority.yml, because GitHub
+scopes the token's permissions per job (ADR-0003 sections 4 and 5):
 
-The model never sees a token and has no tools: its only output is a JSON verdict that
-this script validates against fixed label sets before anything is written. The script
-never sets a milestone, and withholds any reason that repeats the issue's own text, so a
-statement line, IBAN, amount, memo or key pasted into a report is not copied into the
-comment. A report that looks like an undisclosed vulnerability is labelled but not
-restated (ADR-0003 section 4).
+    classify   reads issues, asks Claude once per issue, writes the plan as JSON.
+               Runs with a read-only token; the only other credential is the Claude API
+               identity token. It never writes to GitHub. An issue holding a
+               checksum-valid IBAN is not sent to the model at all (ADR-0003 section 5).
+    apply      reads that plan, checks every label against the fixed sets in
+               labels.json, and applies labels, an assignee and one comment. Runs with
+               issues: write and never imports the Anthropic SDK or calls a model.
 
-Run by .github/workflows/triage-priority.yml:
-    triage_priority.py --issue 42          one issue (the issue event)
-    triage_priority.py --all --limit 20    open issues without a priority (back-fill)
-    triage_priority.py --dry-run ...       classify and print the plan, write nothing
+For each issue that has no `priority:*` label, the model returns a JSON verdict (type,
+severity, reach, area, flags, the review priority of a deferred finding). The priority
+is computed HERE from ADR-0003's table and overrides, never by the model. The model
+has no tools. The script never sets a milestone, and withholds any reason that repeats
+the issue's own text, so a statement line, IBAN, amount, memo or key pasted into a report
+is not copied into the comment. A report that looks like an undisclosed vulnerability is
+labelled but not restated (ADR-0003 section 4).
+
+    triage_priority.py classify --issue 42 --out plan.json
+    triage_priority.py classify --all --limit 20 --dry-run
+    triage_priority.py apply --plan plan.json
 Tests: python -I -m unittest discover -s .github/triage
 """
 
@@ -27,7 +34,7 @@ import os
 import re
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -41,7 +48,10 @@ MAX_TOKENS = 4096
 MAX_TITLE = 300
 MAX_BODY = 6000
 MAX_REASON = 200
+MAX_COMMENT = 6000
 MARKER = "<!-- autobook-triage -->"
+# Text the project template ships in prompt.md and labels.json until they are filled in.
+TEMPLATE_MARKERS = ("PROJECT SUMMARY", "EXAMPLE, replace")
 # Only the workflow's own comments count as triage comments; anyone can type the marker.
 BOT_LOGIN = "github-actions[bot]"
 # An issue left at needs-triage is triaged again only when it is edited, at most this often.
@@ -53,6 +63,10 @@ TYPES = ("bug", "enhancement", "documentation", "spike")
 SEVERITIES = ("critical", "major", "minor", "trivial")
 REACHES = ("common", "edge", "adversarial")
 FLAGS = ("booking_integrity", "security_or_privacy")
+REVIEW_PRIORITIES = ("none", "P0", "P1", "P2", "P3")
+# ADR-0003 section 4 sets a priority on every issue: for an enhancement, documentation or
+# spike, severity is how much it matters if it is not done.
+PRIORITISED_TYPES = TYPES
 
 # ADR-0003 section 2: severity x reach -> priority (0 = P0).
 TABLE = {
@@ -61,11 +75,14 @@ TABLE = {
     "minor": {"common": 2, "edge": 3, "adversarial": 3},
     "trivial": {"common": 3, "edge": 3, "adversarial": 3},
 }
-# ADR-0003 section 3: each override is a floor (the priority is at least this).
+# ADR-0003 section 3: each override is a floor (the priority is at least this). A flag
+# comes from the model; a label is one the issue already has.
 FLOORS = {
     "booking_integrity": (1, "booking-integrity bug"),
     "security_or_privacy": (1, "security or privacy bug"),
 }
+# Autobook has no label that sets a floor (ADR-0003 section 3).
+LABEL_FLOORS: dict[str, tuple[int, str]] = {}
 
 
 def load_config(path: Path = HERE / "labels.json") -> dict:
@@ -76,6 +93,14 @@ def area_names(config: dict) -> list[str]:
     return [name.removeprefix("area:") for name in config["area"]]
 
 
+def allowed_labels(config: dict) -> set[str]:
+    """Every label the bot may add: the types plus the configured groups."""
+    names = set(TYPES)
+    for group in ("severity", "reach", "area", "priority", "other"):
+        names |= set(config[group])
+    return names
+
+
 def verdict_schema(areas: list[str]) -> dict:
     """JSON schema for the model's verdict (structured output)."""
     # Without a description per field, low effort fills each reason with a single word.
@@ -83,7 +108,7 @@ def verdict_schema(areas: list[str]) -> dict:
         "type": "why it is a bug, an enhancement, documentation or a spike",
         "severity": "what goes wrong for the user's book or data and why that is this severity",
         "reach": "who runs into it and why that is this reach",
-        "area": "which part of the system it is in",
+        "area": "which part of Autobook it is in",
         "overrides": "which overrides apply and why, or that none apply",
     }
     reasons = {k: {"type": "string",
@@ -102,6 +127,7 @@ def verdict_schema(areas: list[str]) -> dict:
                 "required": list(FLAGS),
                 "additionalProperties": False,
             },
+            "review_priority": {"type": "string", "enum": list(REVIEW_PRIORITIES)},
             "unsure": {"type": "boolean"},
             "missing": {"type": "string"},
             "financial_data": {"type": "boolean"},
@@ -114,8 +140,9 @@ def verdict_schema(areas: list[str]) -> dict:
                 "additionalProperties": False,
             },
         },
-        "required": ["type", "severity", "reach", "areas", "flags", "unsure", "missing",
-                     "financial_data", "secret_in_issue", "vulnerability_report", "reasons"],
+        "required": ["type", "severity", "reach", "areas", "flags", "review_priority", "unsure",
+                     "missing", "financial_data", "secret_in_issue", "vulnerability_report",
+                     "reasons"],
         "additionalProperties": False,
     }
 
@@ -134,12 +161,14 @@ def validate(verdict: dict, areas: list[str]) -> dict:
             raise InvalidVerdict(f"severity {verdict['severity']!r}")
         if verdict["reach"] not in REACHES:
             raise InvalidVerdict(f"reach {verdict['reach']!r}")
+        if verdict["review_priority"] not in REVIEW_PRIORITIES:
+            raise InvalidVerdict(f"review_priority {verdict['review_priority']!r}")
         chosen = [a for a in verdict["areas"] if a in areas]
         if len(chosen) != len(verdict["areas"]):
             raise InvalidVerdict(f"areas {verdict['areas']!r}")
         flags = {f: verdict["flags"][f] is True for f in FLAGS}
         # A vulnerability report is a security issue, so it gets the security floor even
-        # when the model left that flag off.
+        # when the model left that flag off (ADR-0003 section 5).
         if verdict["vulnerability_report"] is True:
             flags["security_or_privacy"] = True
         reasons = {k: str(verdict["reasons"][k]) for k in ("type", "severity", "reach", "area", "overrides")}
@@ -149,6 +178,7 @@ def validate(verdict: dict, areas: list[str]) -> dict:
             "reach": verdict["reach"],
             "areas": list(dict.fromkeys(chosen))[:2],
             "flags": flags,
+            "review_priority": verdict["review_priority"],
             "unsure": verdict["unsure"] is True,
             "missing": str(verdict["missing"]),
             "financial_data": verdict["financial_data"] is True,
@@ -160,20 +190,26 @@ def validate(verdict: dict, areas: list[str]) -> dict:
         raise InvalidVerdict(f"missing or malformed field: {e}") from e
 
 
-def compute_priority(severity: str, reach: str, flags: dict[str, bool],
+def compute_priority(severity: str, reach: str, flags: dict[str, bool], review_priority: str,
                      existing_labels: set[str]) -> tuple[int, int, list[str]]:
-    """ADR-0003 sections 2 and 3. Returns (priority, table_priority, floors applied).
+    """ADR-0003 sections 2 and 3. Returns (priority, table_priority, notes).
 
-    A floor can come from a model flag or from a label already on the issue; Autobook
-    has no label floors today, so only flags in FLOORS apply."""
+    Order where the rules disagree: the table, then a deferred review finding keeps the
+    review's priority, then the floors, so a floor can still raise a review's priority."""
     base = TABLE[severity][reach]
-    prio, applied = base, []
-    active = {k for k, v in flags.items() if v} | (existing_labels & set(FLOORS))
-    for key, (floor, label) in FLOORS.items():
-        if key in active and floor < prio:
+    prio, notes = base, []
+    if review_priority != "none":
+        kept = int(review_priority[1])
+        if kept != prio:
+            notes.append(f"kept the deferred review's P{kept}")
+        prio = kept
+    floors = [FLOORS[k] for k, on in flags.items() if on and k in FLOORS]
+    floors += [LABEL_FLOORS[name] for name in sorted(existing_labels) if name in LABEL_FLOORS]
+    for floor, label in sorted(set(floors)):
+        if floor < prio:
             prio = floor
-            applied.append(f"{label} (at least P{floor})")
-    return prio, base, applied
+            notes.append(f"{label} (at least P{floor})")
+    return prio, base, notes
 
 
 # --- never echo the issue back ------------------------------------------------------------
@@ -197,8 +233,8 @@ _EDGE = ".,;:!?()[]{}<>\"'`*"
 
 def _identifiers(text: str) -> set[str]:
     """Single tokens that look like keys, hostnames, paths or IDs: IDENT_MIN characters or
-    more with a digit, one of . / _ : = @ +, or two hyphens (a bucket or host name). A word
-    with one hyphen ("read-only") does not count."""
+    more with a digit, one of . / _ : = @ +, or two hyphens (a bucket or host name, or an
+    account name like Ausgaben:Arzt). A word with one hyphen ("read-only") does not count."""
     tokens = (t.strip(_EDGE).lower() for t in text.split())
     return {t for t in tokens
             if len(t) >= IDENT_MIN and (_IDENT_MARK.search(t) or t.count("-") >= 2)}
@@ -258,10 +294,15 @@ class Issue:
 
 @dataclass
 class Plan:
+    number: int = 0
     add_labels: list[str] = field(default_factory=list)
     remove_labels: list[str] = field(default_factory=list)
     assignee: str | None = None
     comment: str = ""
+    # What the classify job saw: whether this run may retry the issue (an edit), and how
+    # many triage comments the issue had. The apply job checks both against a fresh read.
+    retry: bool = False
+    triage_count: int = 0
 
 
 def skip_reason(issue: Issue, retry: bool = False) -> str | None:
@@ -303,16 +344,19 @@ def _row(label: str, why: str) -> str:
 def build_plan(issue: Issue, verdict: dict, config: dict, *, model: str, usage: str,
                truncated: bool) -> Plan:
     issue_text = f"{issue.title}\n{issue.body or ''}"
-    if verdict["vulnerability_report"] or verdict["financial_data"] or verdict["secret_in_issue"]:
+    withhold = (verdict["vulnerability_report"] or verdict["financial_data"]
+                or verdict["secret_in_issue"])
+    if withhold:
         # Labels yes, explanation no: a public comment must not restate the details. The
         # echo check misses a short payee, memo phrase or one-word password, so these are
-        # held back whole.
+        # held back whole (ADR-0003 section 5).
         reasons = {k: "Not restated here; see the note below." for k in verdict["reasons"]}
     else:
         reasons = {k: scrub(v, issue_text) for k, v in verdict["reasons"].items()}
-    plan, rows = Plan(), []
+    plan, rows = Plan(number=issue.number), []
 
     have_type = [t for t in TYPES if t in issue.labels]
+    kind = have_type[0] if have_type else verdict["type"]
     if have_type:
         # The label wins, but a disagreement is worth a line: templates set the type.
         why = "Kept the type the issue already had."
@@ -329,15 +373,18 @@ def build_plan(issue: Issue, verdict: dict, config: dict, *, model: str, usage: 
         rows.append(_row(", ".join(f"area:{a}" for a in verdict["areas"]).replace(", ", "`, `"),
                          reasons["area"]))
 
-    if verdict["unsure"]:
+    if kind not in PRIORITISED_TYPES:
+        rows.append(_row("no priority", f"ADR-0003 does not define a priority for {kind} "
+                                        "issues; a maintainer sets it if needed."))
+    elif verdict["unsure"]:
         plan.add_labels.append("needs-triage")
-        missing = ("not restated" if verdict["vulnerability_report"] or verdict["financial_data"]
-                   or verdict["secret_in_issue"]
+        missing = ("not restated" if withhold
                    else scrub(verdict["missing"], issue_text))
         rows.append(_row("needs-triage", f"Severity or reach could not be placed. Missing: {missing}"))
     else:
-        prio, base, applied = compute_priority(verdict["severity"], verdict["reach"],
-                                               verdict["flags"], issue.labels)
+        prio, base, notes = compute_priority(verdict["severity"], verdict["reach"],
+                                             verdict["flags"], verdict["review_priority"],
+                                             issue.labels)
         if "needs-triage" in issue.labels:
             plan.remove_labels.append("needs-triage")
         plan.add_labels += [f"sev:{verdict['severity']}", f"reach:{verdict['reach']}",
@@ -345,8 +392,8 @@ def build_plan(issue: Issue, verdict: dict, config: dict, *, model: str, usage: 
         rows.append(_row(f"sev:{verdict['severity']}", reasons["severity"]))
         rows.append(_row(f"reach:{verdict['reach']}", reasons["reach"]))
         why = f"{verdict['severity']} × {verdict['reach']} is P{base} in the ADR-0003 table."
-        if applied:
-            why += " Raised by: " + "; ".join(applied) + f". {reasons['overrides']}"
+        if notes:
+            why += " Then: " + "; ".join(notes) + f". {reasons['overrides']}"
         rows.append(_row(f"priority:P{prio}", why))
 
     if not issue.assignees:
@@ -384,6 +431,17 @@ def build_plan(issue: Issue, verdict: dict, config: dict, *, model: str, usage: 
     return plan
 
 
+def unclassified_plan(issue: Issue, why: str, *, model: str, usage: str) -> Plan:
+    """When the model declined or ran out of room: flag for a human, guess nothing."""
+    return Plan(number=issue.number, add_labels=["needs-triage"], comment="\n".join([
+        MARKER,
+        f"**Automated triage** could not classify this issue ({why}). A maintainer will "
+        "triage it by hand under ADR-0003.",
+        "",
+        f"<sub>{model} · {usage}</sub>",
+    ]) + "\n")
+
+
 # --- a real IBAN is never sent to the model -----------------------------------------------
 
 _IBAN = re.compile(r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]){11,30}\b", re.IGNORECASE | re.ASCII)
@@ -400,8 +458,9 @@ def contains_real_iban(text: str) -> bool:
     """True when the text holds a checksum-valid IBAN: most likely a real account. Such
     an issue is not sent to the model at all (ADR-0003 section 5). The pattern is greedy,
     so an uppercase word after the IBAN can join the match; every IBAN length within the
-    match is checked (15 to 34 characters). Case is ignored, for ASCII only: a pasted IBAN can be lowercase, and a Unicode letter
-    that folds to A-Z (the Kelvin sign) must not reach the base-36 conversion."""
+    match is checked (15 to 34 characters). Case is ignored, for ASCII only: a pasted IBAN
+    can be lowercase, and a Unicode letter that folds to A-Z (the Kelvin sign) must not
+    reach the base-36 conversion."""
     for match in _IBAN.findall(text):
         s = match.replace(" ", "").upper()
         if any(_iban_valid(s[:n]) for n in range(15, min(len(s), 34) + 1)):
@@ -409,9 +468,9 @@ def contains_real_iban(text: str) -> bool:
     return False
 
 
-def held_back_plan() -> Plan:
+def held_back_plan(issue: Issue) -> Plan:
     """An issue with a real IBAN in it: ask for a synthetic example, classify nothing."""
-    return Plan(add_labels=["needs-triage"], comment="\n".join([
+    return Plan(number=issue.number, add_labels=["needs-triage"], comment="\n".join([
         MARKER,
         "**Automated triage** did not read this issue: it seems to contain a real IBAN, so "
         "it was not sent to the model. Please replace the statement data with a made-up "
@@ -421,15 +480,63 @@ def held_back_plan() -> Plan:
     ]) + "\n")
 
 
-def unclassified_plan(issue: Issue, why: str, *, model: str, usage: str) -> Plan:
-    """When the model declined or ran out of room: flag for a human, guess nothing."""
-    return Plan(add_labels=["needs-triage"], comment="\n".join([
-        MARKER,
-        f"**Automated triage** could not classify this issue ({why}). A maintainer will "
-        "triage it by hand under ADR-0003.",
-        "",
-        f"<sub>{model} · {usage}</sub>",
-    ]) + "\n")
+# --- the plan handed from the classify job to the apply job -------------------------------
+
+class InvalidPlan(ValueError):
+    pass
+
+
+def check_plan(entry: dict, config: dict) -> Plan:
+    """The apply job's own check of one plan entry. The plan comes from another job, so it
+    is data: every label must be one the bot may add, with at most one of each kind, and
+    the comment must be the bot's own."""
+    try:
+        number = entry["number"]
+        labels = entry["add_labels"]
+        assignee = entry["assignee"]
+        remove = entry["remove_labels"]
+        comment = entry["comment"]
+        retry = entry["retry"]
+        triage_count = entry["triage_count"]
+    except (KeyError, TypeError) as e:
+        raise InvalidPlan(f"missing field: {e}") from e
+    if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
+        raise InvalidPlan(f"issue number {number!r}")
+    if not isinstance(labels, list) or not all(isinstance(l, str) for l in labels):
+        raise InvalidPlan("labels are not a list of strings")
+    unknown = set(labels) - allowed_labels(config)
+    if unknown:
+        raise InvalidPlan(f"labels outside the scheme: {sorted(unknown)}")
+    for prefix in ("sev:", "reach:", "priority:"):
+        if sum(l.startswith(prefix) for l in labels) > 1:
+            raise InvalidPlan(f"more than one {prefix} label")
+    if sum(l in TYPES for l in labels) > 1:
+        raise InvalidPlan("more than one type label")
+    if sum(l.startswith("area:") for l in labels) > 2:
+        raise InvalidPlan("more than two area labels")
+    if not isinstance(remove, list) or not set(remove) <= {"needs-triage"}:
+        raise InvalidPlan(f"may only remove needs-triage, not {remove!r}")
+    if assignee is not None and assignee not in set(config.get("owners", {}).values()):
+        raise InvalidPlan(f"assignee {assignee!r} is not in the owner table")
+    if not isinstance(comment, str) or not comment.startswith(MARKER) or len(comment) > MAX_COMMENT:
+        raise InvalidPlan("comment is not the bot's own")
+    if not isinstance(retry, bool):
+        raise InvalidPlan(f"retry {retry!r}")
+    if not isinstance(triage_count, int) or isinstance(triage_count, bool) or triage_count < 0:
+        raise InvalidPlan(f"triage count {triage_count!r}")
+    return Plan(number=number, add_labels=list(labels), remove_labels=list(remove),
+                assignee=assignee, comment=comment, retry=retry, triage_count=triage_count)
+
+
+def write_plans(path: Path, plans: list[Plan]) -> None:
+    path.write_text(json.dumps([asdict(p) for p in plans], indent=2) + "\n", encoding="utf-8")
+
+
+def read_plans(path: Path, config: dict) -> list[Plan]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, list):
+        raise InvalidPlan("the plan file is not a list")
+    return [check_plan(entry, config) for entry in data]
 
 
 # --- Claude -------------------------------------------------------------------------------
@@ -442,7 +549,10 @@ class Result:
     usage: str
 
 
-def classify(client, prompt: str, issue: Issue, areas: list[str]) -> tuple[Result, bool]:
+def classify_issue(client, prompt: str, issue: Issue, areas: list[str]) -> tuple[Result, bool]:
+    # The caller holds back an issue with a real IBAN; refuse here too, so no path sends one.
+    if contains_real_iban(f"{issue.title}\n{issue.body or ''}"):
+        raise ValueError(f"#{issue.number} holds a real IBAN and must not reach the model")
     text, truncated = issue_input(issue)
     response = client.beta.messages.create(
         model=MODEL,
@@ -538,89 +648,133 @@ def ensure_labels(repo: str, config: dict) -> None:
                 print(f"created label {name}")
 
 
-def apply(repo: str, issue: Issue, plan: Plan, retry: bool = False) -> None:
-    # Re-read the labels: a human may have set a priority while the model was running.
-    fresh = fetch_issue(repo, issue.number)
-    if (why := skip_reason(fresh, retry=retry)):
-        print(f"#{issue.number}: skipped at apply time ({why})")
+def apply_plan(repo: str, plan: Plan) -> None:
+    # Re-read the issue: a human may have set a priority since the classify job read it,
+    # or another run (a back-fill and an issue event can overlap) may have triaged it.
+    fresh = fetch_issue(repo, plan.number)
+    if fresh.triage_count != plan.triage_count:
+        print(f"#{plan.number}: skipped at apply time (triaged by another run since this "
+              "plan was made)")
+        return
+    if (why := skip_reason(fresh, retry=plan.retry)):
+        print(f"#{plan.number}: skipped at apply time ({why})")
         return
     if plan.add_labels:
-        gh("issue", "edit", str(issue.number), "-R", repo, "--add-label", ",".join(plan.add_labels))
+        gh("issue", "edit", str(plan.number), "-R", repo, "--add-label", ",".join(plan.add_labels))
     if plan.remove_labels:
-        gh("issue", "edit", str(issue.number), "-R", repo, "--remove-label", ",".join(plan.remove_labels))
-    if plan.assignee:
+        gh("issue", "edit", str(plan.number), "-R", repo, "--remove-label", ",".join(plan.remove_labels))
+    if plan.assignee and not fresh.assignees:
         try:
-            gh("issue", "edit", str(issue.number), "-R", repo, "--add-assignee", plan.assignee)
+            gh("issue", "edit", str(plan.number), "-R", repo, "--add-assignee", plan.assignee)
         except subprocess.CalledProcessError as e:
-            print(f"#{issue.number}: could not assign {plan.assignee}: {e.stderr.strip()}",
+            print(f"#{plan.number}: could not assign {plan.assignee}: {e.stderr.strip()}",
                   file=sys.stderr)
-    gh("issue", "comment", str(issue.number), "-R", repo, "--body-file", "-", input=plan.comment)
+    gh("issue", "comment", str(plan.number), "-R", repo, "--body-file", "-", input=plan.comment)
 
 
-def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    target = ap.add_mutually_exclusive_group(required=True)
-    target.add_argument("--issue", type=int)
-    target.add_argument("--all", action="store_true", help="open issues without a priority")
-    ap.add_argument("--limit", type=int, default=20, help="cap for --all")
-    ap.add_argument("--dry-run", action="store_true", help="print the plan, write nothing")
-    ap.add_argument("--retry", action="store_true",
-                    help="the issue was edited: retry it if it is at needs-triage")
-    ap.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""))
-    args = ap.parse_args(argv)
-    if not args.repo:
-        ap.error("--repo or $GITHUB_REPOSITORY is required")
+# --- commands -----------------------------------------------------------------------------
 
-    import anthropic  # here, so the tests need no SDK installed
+def load_prompt(path: Path = HERE / "prompt.md") -> str:
+    """The prompt with its maintainer notes removed; refuse one still holding template text."""
+    text = path.read_text(encoding="utf-8")
+    if any(marker in text for marker in TEMPLATE_MARKERS):
+        raise SystemExit("prompt.md still has template text (PROJECT SUMMARY or EXAMPLE); "
+                         "fill it in before running triage")
+    return re.sub(r"<!--.*?-->\n?", "", text, flags=re.S)
+
+
+def run_classify(args) -> int:
+    import anthropic  # here, so the apply job and the tests need no SDK installed
 
     config = load_config()
+    if any("EXAMPLE" in spec["description"] for spec in config["area"].values()):
+        raise SystemExit("labels.json still has the template's example area; replace it first")
     areas = area_names(config)
-    prompt = (HERE / "prompt.md").read_text(encoding="utf-8")
+    prompt = load_prompt()
     client = anthropic.Anthropic(max_retries=3, timeout=120)
-    if not args.dry_run:
-        ensure_labels(args.repo, config)
 
     numbers = open_untriaged(args.repo, args.limit) if args.all else [args.issue]
     if not numbers:
         print("no open issues without a priority")
-    failed = 0
-    for number in numbers:
-        issue = fetch_issue(args.repo, number)
-        if (why := skip_reason(issue, retry=args.retry)):
-            print(f"#{number}: skipped ({why})")
-            continue
-        if contains_real_iban(f"{issue.title}\n{issue.body}"):
-            plan = held_back_plan()
-            print(f"#{number}: not sent to the model (a real IBAN); {', '.join(plan.add_labels)}")
+    plans, failed = [], 0
+    try:
+        for number in numbers:
+            issue = fetch_issue(args.repo, number)
+            if (why := skip_reason(issue, retry=args.retry)):
+                print(f"#{number}: skipped ({why})")
+                continue
+            if contains_real_iban(f"{issue.title}\n{issue.body or ''}"):
+                plan = held_back_plan(issue)
+                plan.retry, plan.triage_count = args.retry, issue.triage_count
+                print(f"#{number}: not sent to the model (a real IBAN); {', '.join(plan.add_labels)}")
+                if args.dry_run:
+                    print(plan.comment)
+                plans.append(plan)
+                continue
+            try:
+                result, truncated = classify_issue(client, prompt, issue, areas)
+            except anthropic.RateLimitError as e:
+                print(f"#{number}: rate limited, stopping: {e.message}", file=sys.stderr)
+                failed += 1
+                break
+            except anthropic.APIStatusError as e:
+                print(f"#{number}: API error {e.status_code}: {e.message}", file=sys.stderr)
+                failed += 1
+                continue
+            except anthropic.APIConnectionError as e:
+                print(f"#{number}: connection error: {e}", file=sys.stderr)
+                failed += 1
+                continue
+            if result.verdict is None:
+                plan = unclassified_plan(issue, result.failure, model=result.model, usage=result.usage)
+            else:
+                plan = build_plan(issue, result.verdict, config, model=result.model,
+                                  usage=result.usage, truncated=truncated)
+            plan.retry, plan.triage_count = args.retry, issue.triage_count
+            print(f"#{number}: {', '.join(plan.add_labels)}; assignee {plan.assignee}; {result.usage}")
             if args.dry_run:
                 print(plan.comment)
-            else:
-                apply(args.repo, issue, plan, retry=args.retry)
-            continue
-        try:
-            result, truncated = classify(client, prompt, issue, areas)
-        except anthropic.RateLimitError as e:
-            print(f"#{number}: rate limited, stopping: {e.message}", file=sys.stderr)
-            return 1
-        except anthropic.APIStatusError as e:
-            print(f"#{number}: API error {e.status_code}: {e.message}", file=sys.stderr)
-            failed += 1
-            continue
-        except anthropic.APIConnectionError as e:
-            print(f"#{number}: connection error: {e}", file=sys.stderr)
-            failed += 1
-            continue
-        if result.verdict is None:
-            plan = unclassified_plan(issue, result.failure, model=result.model, usage=result.usage)
-        else:
-            plan = build_plan(issue, result.verdict, config, model=result.model,
-                              usage=result.usage, truncated=truncated)
-        print(f"#{number}: {', '.join(plan.add_labels)}; assignee {plan.assignee}; {result.usage}")
-        if args.dry_run:
-            print(plan.comment)
-        else:
-            apply(args.repo, issue, plan, retry=args.retry)
+            plans.append(plan)
+    finally:
+        # Whatever was classified is handed on, even when a later issue failed or could
+        # not be read from GitHub.
+        if args.out and not args.dry_run:
+            write_plans(Path(args.out), plans)
     return 1 if failed else 0
+
+
+def run_apply(args) -> int:
+    config = load_config()
+    plans = read_plans(Path(args.plan), config)
+    if not plans:
+        print("nothing to apply")
+        return 0
+    ensure_labels(args.repo, config)
+    for plan in plans:
+        apply_plan(args.repo, plan)
+        print(f"#{plan.number}: applied {', '.join(plan.add_labels)}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""))
+    sub = ap.add_subparsers(dest="command", required=True)
+    c = sub.add_parser("classify", help="ask the model; write the plan, never GitHub")
+    target = c.add_mutually_exclusive_group(required=True)
+    target.add_argument("--issue", type=int)
+    target.add_argument("--all", action="store_true", help="open issues without a priority")
+    c.add_argument("--limit", type=int, default=20, help="cap for --all")
+    c.add_argument("--dry-run", action="store_true", help="print the plan, write no file")
+    c.add_argument("--out", help="where to write the plan (JSON)")
+    c.add_argument("--retry", action="store_true",
+                   help="the issue was edited: retry it if it is at needs-triage")
+    a = sub.add_parser("apply", help="check the plan and write it to GitHub; no model")
+    a.add_argument("--plan", required=True)
+    args = ap.parse_args(argv)
+    if not args.repo:
+        ap.error("--repo or $GITHUB_REPOSITORY is required")
+    return run_classify(args) if args.command == "classify" else run_apply(args)
 
 
 if __name__ == "__main__":
