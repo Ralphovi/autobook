@@ -16,6 +16,8 @@ been overtaken.
 See [ADR-0001](0001-record-architecture-decisions.md) for the process and
 [`../templates/adr.md`](../templates/adr.md) to start one.
 
+## Index
+
 | # | Title | Status | Notes |
 |---|-------|--------|-------|
 | [0001](0001-record-architecture-decisions.md) | Record architecture decisions | Accepted | |

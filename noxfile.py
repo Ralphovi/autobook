@@ -99,8 +99,18 @@ def typos(session: nox.Session) -> None:
 
 @nox.session(python=None, venv_backend="none")
 def docs(session: nox.Session) -> None:
-    """Lint the design documentation: front-matter, structure, internal links."""
+    """Lint the design documentation: front-matter, structure, internal links.
+
+    Also runs the docs-check checkers and their tests (.github/docs-check/), so the gate
+    catches what the required `docs-check` job does. That job keeps running the base
+    commit's copy of each checker; here the working tree's copy runs.
+    """
     session.run("python3", "docs/tools/lint_docs.py", external=True)
+    session.run(
+        "python3", "-I", "-m", "unittest", "discover", "-s", ".github/docs-check", external=True
+    )
+    session.run("python3", "-I", ".github/docs-check/docs_links.py", external=True)
+    session.run("python3", "-I", ".github/docs-check/adr_index.py", external=True)
 
 
 def _testenv(session: nox.Session, marker: str) -> None:
