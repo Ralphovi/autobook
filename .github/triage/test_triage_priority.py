@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -326,6 +327,23 @@ class RealIban(unittest.TestCase):
             tp.apply_plan("o/r", tp.check_plan(written[0], CONFIG))
         self.assertTrue(any(a[:2] == ("issue", "comment") for a in calls))
 
+    def test_classify_keeps_plans_when_a_later_issue_cannot_be_read(self) -> None:
+        held = issue(number=1, body=f"From {self.EXAMPLE}.")
+        def fetch(repo: str, number: int) -> tp.Issue:
+            if number == 1:
+                return held
+            raise subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 503")
+        sdk = mock.MagicMock()
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.dict(sys.modules, {"anthropic": sdk}), \
+                mock.patch.object(tp, "open_untriaged", return_value=[1, 2]), \
+                mock.patch.object(tp, "fetch_issue", side_effect=fetch):
+            out = Path(d) / "plan.json"
+            with self.assertRaises(subprocess.CalledProcessError):
+                tp.main(["--repo", "o/r", "classify", "--all", "--out", str(out)])
+            written = json.loads(out.read_text(encoding="utf-8"))
+        self.assertEqual([p["number"] for p in written], [1])
+
     def test_classify_sends_an_ordinary_issue(self) -> None:
         sdk = mock.MagicMock()
         response = SimpleNamespace(
@@ -539,7 +557,8 @@ class ApplyCheck(unittest.TestCase):
     def entry(self, **over) -> dict:
         e = {"number": 7, "add_labels": ["bug", "area:correlator", "sev:critical", "reach:edge",
                                          "priority:P1"],
-             "remove_labels": [], "assignee": "eduralph", "comment": tp.MARKER + "\nok\n"}
+             "remove_labels": [], "assignee": "eduralph", "comment": tp.MARKER + "\nok\n",
+             "retry": False, "triage_count": 0}
         e.update(over)
         return e
 
@@ -547,6 +566,32 @@ class ApplyCheck(unittest.TestCase):
         p = plan(severity="minor", reach="edge", review_priority="P2")
         self.assertEqual(tp.check_plan(asdict(p), CONFIG), p)
         self.assertEqual(tp.check_plan(self.entry(), CONFIG).number, 7)
+
+    def test_retry_and_triage_count_are_checked(self) -> None:
+        for over in ({"retry": "yes"}, {"triage_count": -1}, {"triage_count": True}):
+            with self.subTest(over=over), self.assertRaises(tp.InvalidPlan):
+                tp.check_plan(self.entry(**over), CONFIG)
+
+    def apply_to(self, p: tp.Plan, fresh: tp.Issue) -> list:
+        calls = []
+        with mock.patch.object(tp, "fetch_issue", return_value=fresh), \
+                mock.patch.object(tp, "gh", side_effect=lambda *a, **k: calls.append(a) or ""):
+            tp.apply_plan("o/r", p)
+        return calls
+
+    def test_apply_skips_a_plan_another_run_overtook(self) -> None:
+        # A back-fill and an issue event classified the same issue; the other one applied
+        # first, so this plan must not post a second comment.
+        p = tp.check_plan(self.entry(retry=True, triage_count=1), CONFIG)
+        self.assertEqual(self.apply_to(p, issue(number=7, triage_count=2, labels={"needs-triage"})), [])
+
+    def test_apply_keeps_the_classify_runs_retry(self) -> None:
+        # A plan made without an edit never retries an issue already triaged.
+        p = tp.check_plan(self.entry(retry=False, triage_count=1), CONFIG)
+        self.assertEqual(self.apply_to(p, issue(number=7, triage_count=1, labels={"needs-triage"})), [])
+        p = tp.check_plan(self.entry(retry=True, triage_count=1), CONFIG)
+        calls = self.apply_to(p, issue(number=7, triage_count=1, labels={"needs-triage"}))
+        self.assertTrue(any(a[:2] == ("issue", "comment") for a in calls))
 
     def test_round_trip_through_the_file(self) -> None:
         plans = [plan(), tp.unclassified_plan(issue(number=9), "x", model="m", usage="u"),

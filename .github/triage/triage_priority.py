@@ -299,6 +299,10 @@ class Plan:
     remove_labels: list[str] = field(default_factory=list)
     assignee: str | None = None
     comment: str = ""
+    # What the classify job saw: whether this run may retry the issue (an edit), and how
+    # many triage comments the issue had. The apply job checks both against a fresh read.
+    retry: bool = False
+    triage_count: int = 0
 
 
 def skip_reason(issue: Issue, retry: bool = False) -> str | None:
@@ -492,6 +496,8 @@ def check_plan(entry: dict, config: dict) -> Plan:
         assignee = entry["assignee"]
         remove = entry["remove_labels"]
         comment = entry["comment"]
+        retry = entry["retry"]
+        triage_count = entry["triage_count"]
     except (KeyError, TypeError) as e:
         raise InvalidPlan(f"missing field: {e}") from e
     if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
@@ -514,8 +520,12 @@ def check_plan(entry: dict, config: dict) -> Plan:
         raise InvalidPlan(f"assignee {assignee!r} is not in the owner table")
     if not isinstance(comment, str) or not comment.startswith(MARKER) or len(comment) > MAX_COMMENT:
         raise InvalidPlan("comment is not the bot's own")
+    if not isinstance(retry, bool):
+        raise InvalidPlan(f"retry {retry!r}")
+    if not isinstance(triage_count, int) or isinstance(triage_count, bool) or triage_count < 0:
+        raise InvalidPlan(f"triage count {triage_count!r}")
     return Plan(number=number, add_labels=list(labels), remove_labels=list(remove),
-                assignee=assignee, comment=comment)
+                assignee=assignee, comment=comment, retry=retry, triage_count=triage_count)
 
 
 def write_plans(path: Path, plans: list[Plan]) -> None:
@@ -639,10 +649,14 @@ def ensure_labels(repo: str, config: dict) -> None:
 
 
 def apply_plan(repo: str, plan: Plan) -> None:
-    # Re-read the issue: a human may have set a priority since the classify job read it.
-    # The classify job already decided whether a retry was due, so allow it here.
+    # Re-read the issue: a human may have set a priority since the classify job read it,
+    # or another run (a back-fill and an issue event can overlap) may have triaged it.
     fresh = fetch_issue(repo, plan.number)
-    if (why := skip_reason(fresh, retry=True)):
+    if fresh.triage_count != plan.triage_count:
+        print(f"#{plan.number}: skipped at apply time (triaged by another run since this "
+              "plan was made)")
+        return
+    if (why := skip_reason(fresh, retry=plan.retry)):
         print(f"#{plan.number}: skipped at apply time ({why})")
         return
     if plan.add_labels:
@@ -683,44 +697,49 @@ def run_classify(args) -> int:
     if not numbers:
         print("no open issues without a priority")
     plans, failed = [], 0
-    for number in numbers:
-        issue = fetch_issue(args.repo, number)
-        if (why := skip_reason(issue, retry=args.retry)):
-            print(f"#{number}: skipped ({why})")
-            continue
-        if contains_real_iban(f"{issue.title}\n{issue.body or ''}"):
-            plan = held_back_plan(issue)
-            print(f"#{number}: not sent to the model (a real IBAN); {', '.join(plan.add_labels)}")
+    try:
+        for number in numbers:
+            issue = fetch_issue(args.repo, number)
+            if (why := skip_reason(issue, retry=args.retry)):
+                print(f"#{number}: skipped ({why})")
+                continue
+            if contains_real_iban(f"{issue.title}\n{issue.body or ''}"):
+                plan = held_back_plan(issue)
+                plan.retry, plan.triage_count = args.retry, issue.triage_count
+                print(f"#{number}: not sent to the model (a real IBAN); {', '.join(plan.add_labels)}")
+                if args.dry_run:
+                    print(plan.comment)
+                plans.append(plan)
+                continue
+            try:
+                result, truncated = classify_issue(client, prompt, issue, areas)
+            except anthropic.RateLimitError as e:
+                print(f"#{number}: rate limited, stopping: {e.message}", file=sys.stderr)
+                failed += 1
+                break
+            except anthropic.APIStatusError as e:
+                print(f"#{number}: API error {e.status_code}: {e.message}", file=sys.stderr)
+                failed += 1
+                continue
+            except anthropic.APIConnectionError as e:
+                print(f"#{number}: connection error: {e}", file=sys.stderr)
+                failed += 1
+                continue
+            if result.verdict is None:
+                plan = unclassified_plan(issue, result.failure, model=result.model, usage=result.usage)
+            else:
+                plan = build_plan(issue, result.verdict, config, model=result.model,
+                                  usage=result.usage, truncated=truncated)
+            plan.retry, plan.triage_count = args.retry, issue.triage_count
+            print(f"#{number}: {', '.join(plan.add_labels)}; assignee {plan.assignee}; {result.usage}")
             if args.dry_run:
                 print(plan.comment)
             plans.append(plan)
-            continue
-        try:
-            result, truncated = classify_issue(client, prompt, issue, areas)
-        except anthropic.RateLimitError as e:
-            print(f"#{number}: rate limited, stopping: {e.message}", file=sys.stderr)
-            failed += 1
-            break
-        except anthropic.APIStatusError as e:
-            print(f"#{number}: API error {e.status_code}: {e.message}", file=sys.stderr)
-            failed += 1
-            continue
-        except anthropic.APIConnectionError as e:
-            print(f"#{number}: connection error: {e}", file=sys.stderr)
-            failed += 1
-            continue
-        if result.verdict is None:
-            plan = unclassified_plan(issue, result.failure, model=result.model, usage=result.usage)
-        else:
-            plan = build_plan(issue, result.verdict, config, model=result.model,
-                              usage=result.usage, truncated=truncated)
-        print(f"#{number}: {', '.join(plan.add_labels)}; assignee {plan.assignee}; {result.usage}")
-        if args.dry_run:
-            print(plan.comment)
-        plans.append(plan)
-    # Whatever was classified is handed on, even when a later issue failed.
-    if args.out and not args.dry_run:
-        write_plans(Path(args.out), plans)
+    finally:
+        # Whatever was classified is handed on, even when a later issue failed or could
+        # not be read from GitHub.
+        if args.out and not args.dry_run:
+            write_plans(Path(args.out), plans)
     return 1 if failed else 0
 
 
