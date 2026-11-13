@@ -55,3 +55,7 @@ proposals.sqlite*
 !tests/fixtures/synthetic/**
 # …but not the bytecode Python writes next to them: the line above re-includes it.
 tests/fixtures/synthetic/**/__pycache__/
+
+# Claude Code machine-local files: may hold recorded commands with secrets; never commit
+**/.claude/settings.local.json*
+CLAUDE.local.md
