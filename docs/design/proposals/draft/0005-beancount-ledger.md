@@ -224,7 +224,7 @@ starts an editor or another program.
 | 1 | Nothing to do | nothing |
 | 2 | Usage or configuration error | nothing |
 | 3 | The batch gate or the version gate refused (§9.2, §9.3) | nothing |
-| 4 | The ledger is not writable as expected: the owned file is not included, its root-name options differ from the main file's, or a ledger file changed during the run | nothing |
+| 4 | The ledger is not writable as expected: the owned file is not included, its root-name options differ from the main file's, a ledger file changed during the run, or another Autobook run holds the writer lock | nothing |
 | 5 | The review file did not parse; the line number is on standard error | nothing |
 | 6 | The read-back or an assertion failed; the previous file was restored | nothing persists |
 | 7 | A statement was rejected at admission; the reason is reported per file | nothing staged from that statement |
@@ -424,8 +424,8 @@ The statement line is already in the ledger: the user wrote it by hand, or it
 is the second side of a transfer.
 
 - **Search** the line's **source** account for a posting with the same amount
-  within ±5 days that is not already claimed by Autobook. Whether the user has
-  asserted a balance since is not a filter.
+  within ±5 days that is not already claimed for that source account. Whether
+  the user has asserted a balance since is not a filter.
 - **Unambiguous** → nothing is created. Staging records which entry matched.
   **Ambiguous or absent** → queue. Never guess.
 - **Nothing is written to a matched entry.** It is in a file Autobook does not
@@ -436,10 +436,18 @@ whenever anything above it is edited. A matched entry is therefore identified
 by a **content hash** over date, flag, payee, narration, tags, links and
 postings, excluding metadata and position (Beancount's `hash_entry` with
 `exclude_meta=True`; verified stable across processes and when the entry
-moves). "Claimed" means: carries an `autobook-id`, or its hash is in staging.
+moves). An entry Autobook created is identified by its `autobook-id` instead.
 
-If the user later edits a matched entry, its hash changes and the claim is
-lost. The staged row stays `applied`, so nothing is proposed twice; the entry
+**Claims are per source account.** An entry is claimed for a source account
+when a staged row of that account already refers to it: the row that created
+it, or a row that matched it. This is what lets a transfer resolve. The first
+side, booked from account A, creates an entry with a posting in A and one in
+B. That entry is claimed for A and not for B, so the second side's search in B
+finds it, matches it once, and claims it for B. An `autobook-id` alone does
+not make an entry unavailable.
+
+If the user later edits a matched hand-written entry, its hash changes and the
+claim is lost. The staged row stays `applied`, so nothing is proposed twice; the entry
 becomes a candidate again, and a second line that then finds more than one
 candidate is queued. See *Risks*.
 
@@ -539,11 +547,14 @@ with other tools and with Autobook's own undo. They get a specification under
 
 #### 10.3 Apply
 
+`apply` first takes the writer lock (§10.6) and holds it until staging is
+updated after step 7 or 8.
+
 1. **Read.** Load the ledger: errors, accounts, existing Autobook IDs, and the
    SHA-256 of every file. The owned file must be among them, with matching
    root-name options. Otherwise exit 4.
 2. **Filter.** Drop rows whose proposal ID is already in the ledger, and
-   matched rows whose hash is in staging and still present.
+   matched rows whose matched entry is recorded in staging and still present.
 3. **Check each row.** Both accounts open on its date; its currency declared
    on the source account and allowed on the other; postings in whole cents
    summing to exactly zero. A row that fails is queued.
@@ -597,13 +608,22 @@ entry's lines, through the same compare-and-replace and read-back as apply. An
 entry the user edited is still removed, with its differences listed before
 confirmation. Undo of a matched row changes staging only.
 
-#### 10.6 No lock
+#### 10.6 No ledger lock; one writer lock
 
-Beancount has no lock. The guards are compare-before-write on every ledger
+Beancount has no lock, so nothing stops an editor or Fava from changing a
+file. The guards are compare-before-write on every ledger
 file (the same check Fava's editor makes before saving), a single atomic
 rename so no reader sees a half-written file, and the read-back with the
 previous content kept. Fava notices the change and reloads. An editor holding
 unsaved changes to the owned file is not covered; see *Risks*.
+
+Two Autobook runs are a different matter: both could pass the compare before
+either renames, and the second would overwrite the first. So `apply` and
+`undo` take Autobook's own **writer lock** (an advisory lock on a file
+beside the staging store, never in the ledger's directory) before the first
+read and hold it until staging is updated. A run that cannot take it writes
+nothing and exits with code 4. The lock binds Autobook only; editors and
+Fava do not know it.
 
 ### 11. Staging
 
@@ -628,7 +648,8 @@ proposals(
   proposed_account, confidence, method,        -- rule | knn | llm
   rule_id,
   status,                                      -- pending|approved|rejected|applied
-  applied_entry,                               -- proposal ID if created, content hash if matched
+  applied_entry,                               -- created: the row's proposal ID. matched: the entry's
+                                               -- autobook-id if it has one, else its content hash
   batch, human_correction,
   classifier_version, normaliser_version, ts
 )
@@ -851,7 +872,10 @@ full. The classification, privacy and review-file rules there are unchanged.
 - **A transfer is booked once.** Every transfer line goes through a
   source-account `match_existing` search before classification.
 - **`match_existing` searches the source account** and never guesses between
-  candidates.
+  candidates. Claims are per source account, so the second side of a transfer
+  can match the entry the first side created.
+- **One Autobook writer at a time.** `apply` and `undo` hold the writer lock
+  from the first read until staging is updated.
 - **Idempotency on re-run.** Created rows are found by ID before each batch.
   A proposal ID that staging holds as applied and the ledger lacks is
   reported, never re-created silently.
@@ -924,6 +948,10 @@ like any other group and mostly become creditor-ID rules.
    - a re-run after a crash at each point between rendering and "marked
      applied" creates nothing twice;
    - a change to any ledger file between read and replace stops the write;
+   - of two `apply` runs started together, one books and the other writes
+     nothing;
+   - the second side of a transfer matches the entry the first side created,
+     once, and a third line with the same amount does not;
    - postings off by one cent, and off by half a cent, are both refused;
    - undo removes exactly the batch's created entries, including when
      unrelated entries were added to the owned file afterwards;

@@ -159,7 +159,13 @@ one does not produce an error — it produces a wrong ledger.
   There is no partial batch.
 - **Compare before replacing.** Nothing is written if any ledger file changed
   since it was read. The replace is one atomic rename of a file written and
-  flushed in the same directory. There is no lock; this is the guard.
+  flushed in the same directory. Beancount has no lock; against editors and
+  Fava this is the guard.
+- **One Autobook writer at a time.** `apply` and `undo` take Autobook's own
+  writer lock (an advisory lock on a file beside the staging store, never in
+  the ledger's directory) before the first read and hold it until staging is
+  updated. Without it, two runs can both pass the compare and the second
+  overwrites the first. A run that cannot take the lock writes nothing.
 - **Read back, then report.** After the replace, load the ledger again. A row
   is reported applied — in `apply-out` and as `applied` in staging — only after
   the read-back finds its proposal ID exactly once with the approved date,
@@ -190,15 +196,18 @@ one does not produce an error — it produces a wrong ledger.
   anything else belongs to the user.
 - **`autobook-id` only on entries Autobook creates.** A created entry carries
   its proposal ID in `autobook-id`. On a `match_existing` row Autobook writes
-  nothing to the ledger; staging records the matched entry's content hash in
-  `applied_entry`.
+  nothing to the ledger; staging records the matched entry in `applied_entry`:
+  its `autobook-id` if it has one, otherwise its content hash.
 - **`match_existing` searches the row's source account**, not the target
-  account, and its candidates are entries not already claimed by Autobook
-  (carrying an `autobook-id`, or with their hash in staging). An ambiguous or
+  account, and its candidates are entries not already claimed **for that
+  source account**: an entry is claimed for an account when a staged row of
+  that account created or matched it. An `autobook-id` alone does not exclude
+  an entry, or the second side of a transfer could never match the entry the
+  first side created. An ambiguous or
   absent match is queued; never guess between candidates. Do not filter on
   whether the user has asserted a balance since.
-- **A matched entry is identified by its content hash**, excluding metadata and
-  file position. Never by file and line: both move whenever anything above the
+- **A matched hand-written entry is identified by its content hash**, excluding
+  metadata and file position. Never by file and line: both move whenever anything above the
   entry is edited.
 - **A transfer is booked once.** Every transfer row goes through a
   source-account `match_existing` search *before* classification. The second
@@ -402,13 +411,16 @@ When a defect class recurs, it graduates to a gate and drops out of review scope
 - *Idempotency*: a path that can create an entry twice after a crash between
   "file replaced" and "marked applied"; an `autobook-id` written to a matched
   entry; a value that does not match the proposal-ID pattern treated as
-  Autobook's; a missing entry silently re-created; an undo that removes
+  Autobook's; a missing entry silently re-created; an `apply` or `undo` that
+  runs without the writer lock; an undo that removes
   without checking both the staged `create` row and the owned file.
 - *Double-booking*: a transfer booked from both statements, or a second side
   classified instead of matched or queued as "pending transfer"; a PayPal row
   classified as an expense rather than matched to its funding transaction (in
   `account` mode); a `match_existing` search on the target account, or one
-  that picks between several candidates; a matched entry identified by file
+  that picks between several candidates; a claim that is not per source account
+  (the second side of a transfer unable to match, or one posting matched
+  twice); a matched entry identified by file
   and line.
 - *Boundary*: `beancount` imported outside the ledger package; `ofxstatement`
   or `gnucash` imported anywhere but the conversion's export half; ledger text

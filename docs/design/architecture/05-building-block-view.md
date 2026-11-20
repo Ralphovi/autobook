@@ -556,11 +556,14 @@ line resolves as `match_existing`.
 **`match_existing`** means the line is already in the ledger: the user wrote it
 by hand, or it is the second side of a transfer. The search looks in the row's
 **source** account for a posting with the same amount within ±5 days, among
-entries not already claimed by Autobook. An entry is *claimed* when it carries
-an `autobook-id` or its content hash (section 5.1) is in staging's
-`applied_entry`. Whether the user has asserted a balance since does not matter.
+entries not already claimed for that source account. An entry is *claimed for a
+source account* when a staged row of that account created it or matched it;
+`applied_entry` records which entry a row refers to. An `autobook-id` alone does
+not exclude an entry: the first side of a transfer creates an entry that is
+claimed for its own account only, so the second side's search in the other
+account finds it and matches it once. Whether the user has asserted a balance since does not matter.
 One candidate: nothing is created, and staging records the matched entry's
-content hash. No candidate or more than one: the row is queued. The search
+`autobook-id` if it has one, otherwise its content hash (section 5.1). No candidate or more than one: the row is queued. The search
 never guesses.
 
 Nothing is written to a matched entry; it is in a file Autobook does not own.
@@ -676,7 +679,8 @@ proposals(source_account, line_key,       -- PK (source_account, line_key)
           disposition, queue_reason,
           proposed_account, confidence, method, rule_id,  -- method: rule | knn | llm
           status,                         -- pending|approved|rejected|applied
-          applied_entry,                  -- proposal ID if created, content hash if matched
+          applied_entry,                  -- created: the row's proposal ID; matched: the entry's
+                                          -- autobook-id if it has one, else its content hash
           batch, human_correction,
           doc_id, doc_match, doc_candidates,  -- proposal 0002: linked bill, linked|weak|ambiguous|none, count
           classifier_version, normaliser_version, ts)
@@ -690,8 +694,9 @@ synthesised the `(statement checksum, line ordinal)` pair. The **proposal ID**
 is something else: `AB-` followed by a ULID (a 26-character sortable unique
 ID), generated once per staged row. Only an `autobook-id` value matching
 `^AB-[0-9A-HJKMNP-TV-Z]{26}$` counts as Autobook's; it is written on entries
-Autobook creates and on nothing else. `applied_entry` holds the proposal ID for
-a created row and the content hash for a matched row. `batch` names the batch
+Autobook creates and on nothing else. `applied_entry` holds the row's own proposal ID for
+a created row; for a matched row it holds the matched entry's `autobook-id` if
+it has one (the first side of a transfer) and otherwise its content hash. `batch` names the batch
 a row was applied in; it is what `autobook undo BATCH` works from. A row is
 `applied` only after the ledger package's read-back and every assertion have
 passed.
@@ -762,7 +767,9 @@ what staging recorded, and proposal IDs that staging holds as applied but the
 ledger no longer contains. Both are reports, never writes: a missing entry is
 not silently created again.
 
-**No lock.** Beancount has no lock. The guards are the compare before the
+**No ledger lock; one writer lock.** Two Autobook runs are a different matter: both could pass the compare before either renames, and the second would overwrite the first. So `apply` and `undo` take Autobook's own **writer lock** (an advisory lock on a file beside the staging store, never in the ledger's directory) before the first read and hold it until staging is updated. A run that cannot take it writes nothing and exits with code 4. The lock binds Autobook only; editors and Fava do not know it.
+
+Against editors and Fava: Beancount has no lock. The guards are the compare before the
 replace on every ledger file, the single atomic rename, so that no reader sees a
 half-written file, and the read-back with the previous content kept. An editor
 holding unsaved changes to the owned file is not covered (proposal 0005,
@@ -841,7 +848,7 @@ Exit codes (proposal 0005 §4.3):
 | 1 | Nothing to do | nothing |
 | 2 | Usage or configuration error | nothing |
 | 3 | The batch gate or the version gate refused | nothing |
-| 4 | The ledger is not writable as expected: the owned file is not included, its root-name options differ from the main file's, or a ledger file changed during the run | nothing |
+| 4 | The ledger is not writable as expected: the owned file is not included, its root-name options differ from the main file's, a ledger file changed during the run, or another Autobook run holds the writer lock | nothing |
 | 5 | The review file did not parse; the line number is on standard error | nothing |
 | 6 | The read-back or an assertion failed; the previous file was restored | nothing persists |
 | 7 | A statement was rejected at admission; the reason is reported per file | nothing staged from that statement |

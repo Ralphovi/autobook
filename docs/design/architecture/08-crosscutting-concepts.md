@@ -67,7 +67,7 @@ and the ID in the ledger settles it.
 
 A `match_existing` row writes nothing at all: the matched entry is in a file
 Autobook does not own. A hand-written entry has no permanent identifier, so
-staging records its **content hash** in `applied_entry` — Beancount's
+staging records it in `applied_entry` by its **content hash** — Beancount's
 `hash_entry` with `exclude_meta=True`, over date, flag, payee, narration, tags,
 links and postings, stable when the entry moves in its file. A re-run drops a
 matched row whose hash is in staging and still present in the ledger.
@@ -201,7 +201,11 @@ file for the duration of the run and restores it when the read-back or an
 assertion fails. Keeping the ledger in git is recommended, never required. The
 real safety net is batch reversibility by proposal ID.
 
-Beancount has no lock, so there is none to take or respect. The guards are
+Beancount has no lock, so against editors and Fava there is none to take or
+respect. Between Autobook runs there is one: `apply` and `undo` hold Autobook's
+own writer lock from the first read until staging is updated, because two runs
+could otherwise both pass the compare and the second overwrite the first. The
+other guards are
 compare-before-write on every ledger file (each file's SHA-256 is taken at read
 and checked again before the replace), a single atomic rename so that no reader
 sees a half-written file, and the read-back with the previous content kept.

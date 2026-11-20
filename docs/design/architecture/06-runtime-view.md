@@ -67,7 +67,10 @@ There is no lock and no ordering between Autobook and other programs. The
 ledger is text files; an editor or Fava may have them open during a run. What
 protects the ledger instead is in 6.5: nothing is written if any ledger file
 changed since it was read, the owned file is replaced by one atomic rename, and
-a failed read-back puts the previous content back.
+a failed read-back puts the previous content back. Between two Autobook runs
+there is a lock: `apply` and `undo` hold Autobook's own writer lock from the
+first read until staging is updated, and a run that cannot take it writes
+nothing (exit 4).
 
 ## 6.2 Admitting a statement
 
@@ -134,10 +137,12 @@ Then: a target account that is not open in the ledger on the line's date, a
 currency that the account's `open` directive does not allow, or confidence below
 threshold → `queue`. Before any `create`, the row's **source** account is
 searched within ±5 days for a posting of the same amount in an entry that
-Autobook has not already claimed: unique → `match_existing`; ambiguous →
-`queue`. An entry is **claimed** when it carries an `autobook-id` (the metadata
-key under which a created entry holds its proposal ID), or when its **content
-hash** is in staging. The content hash covers the entry's date, flag, payee,
+is not already claimed for that source account: unique → `match_existing`;
+ambiguous → `queue`. An entry is **claimed for a source account** when a staged
+row of that account created it or matched it. An `autobook-id` (the metadata
+key under which a created entry holds its proposal ID) does not by itself
+exclude an entry: the second side of a transfer matches the entry the first
+side created. A hand-written entry is identified by its **content hash**. The content hash covers the entry's date, flag, payee,
 narration, tags, links and postings, not its metadata or position, and is how
 Autobook identifies an entry it did not write (§8.2). Whether the user has
 asserted a balance since is not a filter. Finally the row is pre-marked `a` only
@@ -180,6 +185,9 @@ stays in staging only.
 writer then books the approved rows in eight steps (§10.3). A batch is booked
 whole or not at all.
 
+0. **Lock.** Take the writer lock, an advisory lock on a file beside the staging
+   store. It is held until staging is updated at the end. If another Autobook
+   run holds it: exit 4, nothing written.
 1. **Read.** Load the ledger: its errors, the accounts, the existing Autobook
    IDs, and the SHA-256 of every loaded file. The owned file must be among
    them, and its root-name options (`name_assets` … `name_expenses`) must match
