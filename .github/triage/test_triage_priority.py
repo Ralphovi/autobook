@@ -9,12 +9,14 @@ payees and memos are invented, as the repository's fixtures must be (AGENTS.md).
 from __future__ import annotations
 
 import ast
+import io
 import json
 import subprocess
 import sys
 import tempfile
 import unittest
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -44,7 +46,8 @@ def verdict(**over) -> dict:
 
 def issue(**over) -> tp.Issue:
     i = tp.Issue(number=7, title="Transfer between two own accounts is booked twice",
-                 body="Steps: import both statements in one batch.", labels=set(), assignees=[])
+                 body="Steps: import both statements in one batch.", labels=set(), assignees=[],
+                 author_association="MEMBER", updated_at="2026-01-01T00:00:00Z")
     for k, val in over.items():
         setattr(i, k, val)
     return i
@@ -139,8 +142,16 @@ class Validate(unittest.TestCase):
         got = tp.validate(verdict(areas=["correlator", "book", "review"]), AREAS)["areas"]
         self.assertEqual(got, ["correlator", "book"])
 
-    def test_no_area_is_allowed(self) -> None:
-        self.assertEqual(tp.validate(verdict(areas=[]), AREAS)["areas"], [])
+    def test_no_area_is_rejected(self) -> None:
+        # #60: an answer with no area leaves the issue without an area label or owner.
+        with self.assertRaises(tp.InvalidVerdict):
+            tp.validate(verdict(areas=[]), AREAS)
+
+    def test_schema_requires_an_area(self) -> None:
+        areas = tp.verdict_schema(AREAS)["properties"]["areas"]
+        self.assertEqual(areas["minItems"], 1)
+        # Structured output rejects maxItems; validate() keeps the first two instead.
+        self.assertNotIn("maxItems", areas)
 
     def test_vulnerability_report_sets_the_security_flag(self) -> None:
         got = tp.validate(verdict(vulnerability_report=True), AREAS)
@@ -408,22 +419,106 @@ class Skip(unittest.TestCase):
         self.assertIsNone(tp.skip_reason(issue()))
 
 
+OLD = "2026-01-01T00:00:00Z"
+
+
+def node(number: int, labels=(), comments=(), total=None, updated=OLD, bot=False) -> dict:
+    """One issue as the back-fill's GraphQL query returns it."""
+    return {"number": number, "updatedAt": updated,
+            "author": {"__typename": "Bot" if bot else "User", "login": "someone"},
+            "labels": {"nodes": [{"name": l} for l in labels]},
+            "comments": {"totalCount": len(comments) if total is None else total,
+                         "nodes": list(comments)}}
+
+
+BOT_COMMENT = {"author": {"__typename": "Bot", "login": tp.GRAPHQL_BOT_LOGIN},
+               "body": tp.MARKER + "\nlabels"}
+
+
+def pages(*page_nodes: list) -> list[str]:
+    """gh outputs for consecutive GraphQL pages."""
+    out = []
+    for i, nodes in enumerate(page_nodes):
+        last = i == len(page_nodes) - 1
+        out.append(json.dumps({"data": {"repository": {"issues": {
+            "pageInfo": {"hasNextPage": not last, "endCursor": None if last else f"c{i}"},
+            "nodes": nodes}}}}))
+    return out
+
+
 class Backfill(unittest.TestCase):
     """The back-fill limit counts only issues that will be triaged."""
 
+    def scan(self, outputs: list[str], limit: int, fetched=None) -> tuple[list[int], list]:
+        calls = []
+        def fake_gh(*args, **kw):
+            calls.append(args)
+            return outputs[len(calls) - 1]
+        fetch = mock.MagicMock(side_effect=lambda repo, n: fetched[n])
+        with mock.patch.object(tp, "gh", side_effect=fake_gh), \
+                mock.patch.object(tp, "fetch_issue", fetch):
+            return tp.open_untriaged("o/r", limit), calls, fetch
+
     def test_already_triaged_issues_do_not_fill_the_batch(self) -> None:
-        listed = [{"number": n, "labels": []} for n in range(1, 8)]
-        listed.append({"number": 8, "labels": [{"name": "priority:P2"}]})
         # 1-3 already had their one pass and stay at needs-triage; 4-7 are fresh.
-        seen = {n: issue(number=n, triage_count=1, labels={"needs-triage"}) for n in (1, 2, 3)}
-        old_gh, old_fetch = tp.gh, tp.fetch_issue
-        tp.gh = lambda *args, **kw: json.dumps(listed)
-        tp.fetch_issue = lambda repo, n: seen.get(n) or issue(number=n)
-        try:
-            self.assertEqual(tp.open_untriaged("o/r", 2), [4, 5])
-            self.assertEqual(tp.open_untriaged("o/r", 20), [4, 5, 6, 7])
-        finally:
-            tp.gh, tp.fetch_issue = old_gh, old_fetch
+        nodes = [node(n, labels=["needs-triage"], comments=[BOT_COMMENT]) for n in (1, 2, 3)]
+        nodes += [node(n) for n in (4, 5, 6, 7)] + [node(8, labels=["priority:P2"])]
+        self.assertEqual(self.scan(pages(nodes), 2)[0], [4, 5])
+        self.assertEqual(self.scan(pages(nodes), 20)[0], [4, 5, 6, 7])
+
+    def test_one_request_per_page_not_per_issue(self) -> None:
+        # #69: 120 already-triaged issues cost three GraphQL requests, no REST call.
+        triaged = [node(n, labels=["needs-triage"], comments=[BOT_COMMENT]) for n in range(1, 121)]
+        found, calls, fetch = self.scan(pages(triaged[:50], triaged[50:100], triaged[100:]), 20)
+        self.assertEqual(found, [])
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(all(c[:2] == ("api", "graphql") for c in calls))
+        fetch.assert_not_called()
+        self.assertIn("-f", calls[1])
+        self.assertIn("cursor=c0", calls[1])
+
+    def test_stops_at_the_scan_cap(self) -> None:
+        many = [node(n, labels=["needs-triage"], comments=[BOT_COMMENT]) for n in range(1, 51)]
+        outputs = pages(*([many] * 20))
+        _, calls, _ = self.scan(outputs, 20)
+        self.assertEqual(len(calls), tp.MAX_SCAN // tp.BACKFILL_PAGE)
+
+    def test_stops_once_the_limit_is_reached(self) -> None:
+        fresh = [node(n) for n in range(1, 51)]
+        found, calls, _ = self.scan(pages(fresh, fresh), 3)
+        self.assertEqual((found, len(calls)), ([1, 2, 3], 1))
+
+    def test_only_the_workflow_comments_count(self) -> None:
+        copied = {"author": {"__typename": "User", "login": "github-actions"},
+                  "body": tp.MARKER}
+        other_bot = {"author": {"__typename": "Bot", "login": "dependabot"}, "body": tp.MARKER}
+        nodes = [node(1, comments=[copied]), node(2, comments=[other_bot]), node(3, bot=True)]
+        self.assertEqual(self.scan(pages(nodes), 20)[0], [1, 2])
+
+    def test_reads_an_issue_with_many_comments_through_rest(self) -> None:
+        nodes = [node(1, comments=[{"author": None, "body": "x"}] * 100, total=150)]
+        found, _, fetch = self.scan(pages(nodes), 20,
+                                    fetched={1: issue(number=1, triage_count=1)})
+        self.assertEqual(found, [])
+        fetch.assert_called_once_with("o/r", 1)
+
+    def test_leaves_a_recently_changed_issue_to_its_own_run(self) -> None:
+        # #70: an issue event's run may be classifying it right now.
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        nodes = [node(1, updated=now), node(2)]
+        self.assertEqual(self.scan(pages(nodes), 20)[0], [2])
+
+
+class Limit(unittest.TestCase):
+    def test_rejects_a_limit_below_one(self) -> None:
+        # #68: -1 never equalled the count, so the cap was off.
+        for bad in ("-1", "0", "x"):
+            with self.subTest(limit=bad), self.assertRaises(SystemExit), \
+                    mock.patch("sys.stderr"):
+                tp.main(["--repo", "o/r", "classify", "--all", "--limit", bad, "--dry-run"])
+
+    def test_accepts_a_positive_limit(self) -> None:
+        self.assertEqual(tp.positive_int("3"), 3)
 
 
 class ClearsNeedsTriage(unittest.TestCase):
@@ -558,7 +653,8 @@ class ApplyCheck(unittest.TestCase):
         e = {"number": 7, "add_labels": ["bug", "area:correlator", "sev:critical", "reach:edge",
                                          "priority:P1"],
              "remove_labels": [], "assignee": "eduralph", "comment": tp.MARKER + "\nok\n",
-             "retry": False, "triage_count": 0}
+             "retry": False, "triage_count": 0, "text_hash": tp.text_hash(issue()),
+             "backfill": False, "updated_at": issue().updated_at}
         e.update(over)
         return e
 
@@ -641,7 +737,338 @@ class ApplyCheck(unittest.TestCase):
                 if "anthropic" in names:
                     owner = next(f for f in ast.walk(tree) if isinstance(f, ast.FunctionDef)
                                  and node in ast.walk(f))
-                    self.assertEqual(owner.name, "run_classify")
+                    self.assertIn(owner.name, ("run_classify", "claude_client"))
+        # ... and the apply path never reaches either.
+        for name in ("run_apply", "apply_plan", "check_plan", "read_plans", "ensure_labels"):
+            source = ast.get_source_segment(Path(tp.__file__).read_text(encoding="utf-8"),
+                                            next(f for f in ast.walk(tree)
+                                                 if isinstance(f, ast.FunctionDef) and f.name == name))
+            with self.subTest(function=name):
+                self.assertNotIn("claude_client", source)
+                self.assertNotIn("run_classify", source)
+
+
+class HoldBack(unittest.TestCase):
+    """#57: more than an IBAN is kept from the model. Every value below is made up."""
+
+    def test_credentials_are_held_back(self) -> None:
+        for text in (
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAA\n",
+            "key sk-ant-api03-" + "x1" * 20,
+            "token ghp_" + "a1B2" * 9,
+            "github_pat_" + "a1B2_" * 10,
+            "AKIA" + "ABCDEFGHIJ234567",
+            "AIza" + "a1" * 17 + "b",
+            "xoxb-1234567890-abcdefghij",
+            ".".join(["eyJ" + "a1b2" * 3, "eyJ" + "c3d4" * 3, "e5f6" * 3]),  # JWT shape
+            "paperless:\n  token: " + "3f9a" * 4,
+            'PASSWORD="hunter2hunter2"',
+            "api_key = " + "Zq8v" * 3,
+        ):
+            with self.subTest(text=text[:20]):
+                self.assertEqual(tp.hold_back_reason(text), "secret")
+
+    def test_placeholders_and_prose_are_not_credentials(self) -> None:
+        for text in ("Set `token: <your paperless token>` in the config.",
+                     "api_key = os.environ['KEY']", "GH_TOKEN: ${{ github.token }}",
+                     "The password field is empty.", "token: changeme",
+                     "A read-only token works.", "author: someone else"):
+            with self.subTest(text=text):
+                self.assertIsNone(tp.hold_back_reason(text))
+
+    def test_account_paths_are_held_back(self) -> None:
+        for text in ("booked to Ausgaben:Arzt", "Expenses:Medical:Dentist is wrong",
+                     "from Aktiva:Girokonto", "Einnahmen:Gehalt twice"):
+            with self.subTest(text=text):
+                self.assertEqual(tp.hold_back_reason(text), "account")
+
+    def test_ordinary_text_is_sent(self) -> None:
+        for text in ("Expenses: the cost of a run is high.", "Imbalance-EUR fills up.",
+                     "The income statement is wrong.", "PR 12 fixes it",
+                     "Transfer between two own accounts is booked twice"):
+            with self.subTest(text=text):
+                self.assertIsNone(tp.hold_back_reason(text))
+
+    def test_held_back_comment_names_the_kind_never_the_match(self) -> None:
+        body = "Booked to Ausgaben:Arzt with token ghp_" + "a1B2" * 9
+        for reason, word in (("iban", "IBAN"), ("secret", "rotate"), ("account", "account")):
+            with self.subTest(reason=reason):
+                p = tp.held_back_plan(issue(body=body), reason)
+                self.assertIn(word, p.comment)
+                self.assertNotIn("Arzt", p.comment)
+                self.assertNotIn("ghp_", p.comment)
+                self.assertEqual(p.add_labels, ["needs-triage"])
+                self.assertEqual(tp.check_plan(asdict(p), CONFIG), p)
+
+    def test_classify_never_sends_a_held_back_issue(self) -> None:
+        client = mock.MagicMock()
+        for i in (issue(body="booked to Ausgaben:Arzt"), issue(title="token ghp_" + "a1B2" * 9)):
+            with self.subTest(i=i.title), self.assertRaises(ValueError):
+                tp.classify_issue(client, "rules", i, AREAS)
+        client.beta.messages.create.assert_not_called()
+
+    def test_the_whole_body_is_checked_not_only_what_is_sent(self) -> None:
+        body = "x" * (tp.MAX_BODY + 10) + " Ausgaben:Arzt"
+        self.assertEqual(tp.hold_back_reason(body), "account")
+
+
+class ApplyRechecks(unittest.TestCase):
+    def apply_to(self, p: tp.Plan, fresh: tp.Issue, fail=None) -> list:
+        calls = []
+        def fake_gh(*a, **k):
+            calls.append(a)
+            if fail and fail(a):
+                raise subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 502")
+            return ""
+        with mock.patch.object(tp, "fetch_issue", return_value=fresh), \
+                mock.patch.object(tp, "gh", side_effect=fake_gh), mock.patch("sys.stderr"):
+            try:
+                tp.apply_plan("o/r", p)
+            except subprocess.CalledProcessError:
+                calls.append(("raised",))
+        return calls
+
+    def test_drops_a_plan_for_text_that_changed(self) -> None:
+        # #58: the author edited while the model ran; the queued edit run classifies it.
+        p = plan()
+        self.assertEqual(self.apply_to(p, issue(body="Edited: it only happens on SQL books.")), [])
+        self.assertEqual(self.apply_to(p, issue(title="New title")), [])
+        self.assertTrue(self.apply_to(p, issue()))
+
+    def test_a_failed_comment_takes_the_labels_off_again(self) -> None:
+        # #59: otherwise the priority stays with no comment and a rerun skips the issue.
+        p = plan(i=issue(labels={"needs-triage", "bug"}))
+        calls = self.apply_to(p, issue(labels={"needs-triage", "bug"}),
+                              fail=lambda a: a[:2] == ("issue", "comment"))
+        self.assertEqual(calls[-1], ("raised",))
+        added = [a for a in calls if "--add-label" in a]
+        removed = [a for a in calls if "--remove-label" in a]
+        self.assertEqual(added[0][-1], "area:correlator,sev:critical,reach:edge,priority:P1")
+        self.assertEqual(removed[-1][-1], added[0][-1])   # undone
+        self.assertEqual(added[-1][-1], "needs-triage")    # restored
+        self.assertFalse(any("--add-assignee" in a for a in calls))
+
+    def test_labels_it_did_not_add_are_not_removed_on_undo(self) -> None:
+        p = plan()
+        fresh = issue(labels={"area:correlator"})
+        calls = self.apply_to(p, fresh, fail=lambda a: a[:2] == ("issue", "comment"))
+        undo = [a for a in calls if "--remove-label" in a][-1]
+        self.assertNotIn("area:correlator", undo[-1].split(","))
+
+    def test_skips_the_assignee_when_someone_was_assigned_meanwhile(self) -> None:
+        # #67: a maintainer assigned someone while the model ran.
+        p = plan()
+        self.assertEqual(p.assignee, "eduralph")
+        calls = self.apply_to(p, issue(assignees=["maintainer"]))
+        self.assertTrue(any(a[:2] == ("issue", "comment") for a in calls))
+        self.assertFalse(any("--add-assignee" in a for a in calls))
+        self.assertTrue(any("--add-assignee" in a for a in self.apply_to(p, issue())))
+
+    def test_assignee_comes_after_the_comment(self) -> None:
+        calls = self.apply_to(plan(), issue())
+        kinds = ["comment" if a[:2] == ("issue", "comment") else a[-2] for a in calls]
+        self.assertEqual(kinds[-2:], ["comment", "--add-assignee"])
+
+    def test_a_backfill_plan_gives_way_to_any_change(self) -> None:
+        # #70: an issue event's run may be triaging the issue at the same time.
+        p = plan()
+        p.backfill = True
+        self.assertEqual(self.apply_to(p, issue(updated_at="2026-11-20T10:00:00Z")), [])
+        self.assertTrue(self.apply_to(p, issue()))
+
+    def test_an_event_plan_ignores_unrelated_changes(self) -> None:
+        # The `new` label workflow touches every new issue while the model runs.
+        self.assertTrue(self.apply_to(plan(), issue(updated_at="2026-11-20T10:00:00Z")))
+
+    def test_one_failed_issue_does_not_stop_the_others(self) -> None:
+        plans = [plan(i=issue(number=1)), plan(i=issue(number=2))]
+        def fetch(repo, n):
+            if n == 1:
+                raise subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 502")
+            return issue(number=2)
+        written = []
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(tp, "fetch_issue", side_effect=fetch), \
+                mock.patch.object(tp, "ensure_labels"), mock.patch("sys.stderr"), \
+                mock.patch.object(tp, "gh", side_effect=lambda *a, **k: written.append(a) or ""):
+            path = Path(d) / "plan.json"
+            tp.write_plans(path, plans)
+            self.assertEqual(tp.main(["--repo", "o/r", "apply", "--plan", str(path)]), 1)
+        self.assertTrue(any(a[:3] == ("issue", "comment", "2") for a in written))
+
+
+class EnsureLabels(unittest.TestCase):
+    def test_a_label_another_run_created_is_fine(self) -> None:
+        # #66: two runs both saw the label missing.
+        def fake_gh(*a, **k):
+            if a[:2] == ("label", "list"):
+                return "[]"
+            raise subprocess.CalledProcessError(
+                1, ["gh"], stderr=f'label with name "{a[2]}" already exists; use `--force`')
+        with mock.patch.object(tp, "gh", side_effect=fake_gh), mock.patch("sys.stdout"):
+            tp.ensure_labels("o/r", CONFIG)
+
+    def test_other_failures_still_fail(self) -> None:
+        def fake_gh(*a, **k):
+            if a[:2] == ("label", "list"):
+                return "[]"
+            raise subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 403")
+        with mock.patch.object(tp, "gh", side_effect=fake_gh), \
+                self.assertRaises(subprocess.CalledProcessError):
+            tp.ensure_labels("o/r", CONFIG)
+
+
+class Retry(unittest.TestCase):
+    """#63: provisional areas and owner are not set by an unsure verdict."""
+
+    def test_unsure_sets_no_area_and_no_owner(self) -> None:
+        p = plan(unsure=True, missing="Whether the book is XML or SQL.")
+        self.assertFalse(any(l.startswith("area:") for l in p.add_labels))
+        self.assertIsNone(p.assignee)
+
+    def test_a_placed_retry_sets_the_areas_and_owner(self) -> None:
+        p = plan(i=issue(labels={"needs-triage", "bug"}, triage_count=1), areas=["book"])
+        self.assertIn("area:book", p.add_labels)
+        self.assertEqual(p.assignee, "eduralph")
+
+    def test_areas_already_set_are_kept_and_not_added_to(self) -> None:
+        p = plan(i=issue(labels={"area:review"}), areas=["book", "correlator"])
+        self.assertFalse(any(l.startswith("area:") for l in p.add_labels))
+        self.assertIn("Kept the area", p.comment)
+
+
+class Truncated(unittest.TestCase):
+    def test_a_failed_classification_says_the_text_was_cut(self) -> None:
+        # #64
+        p = tp.unclassified_plan(issue(), "the model ran out of output room", model="m",
+                                 usage="u", truncated=True)
+        self.assertIn(tp.TRUNCATED_NOTE, p.comment)
+        self.assertNotIn(tp.TRUNCATED_NOTE, tp.unclassified_plan(issue(), "x", model="m",
+                                                                  usage="u").comment)
+
+    def test_classify_passes_the_cut_on(self) -> None:
+        sdk = mock.MagicMock()
+        response = SimpleNamespace(
+            usage=SimpleNamespace(input_tokens=10, cache_read_input_tokens=0,
+                                  cache_creation_input_tokens=0, output_tokens=5),
+            model=tp.MODEL, stop_reason="refusal", content=[])
+        sdk.Anthropic.return_value.beta.messages.create.return_value = response
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.dict(sys.modules, {"anthropic": sdk}), \
+                mock.patch.dict("os.environ", {"ACTIONS_ID_TOKEN_REQUEST_URL": ""}), \
+                mock.patch.object(tp, "fetch_issue",
+                                  return_value=issue(body="x" * (tp.MAX_BODY + 1))):
+            out = Path(d) / "plan.json"
+            tp.main(["--repo", "o/r", "classify", "--issue", "7", "--out", str(out)])
+            written = json.loads(out.read_text(encoding="utf-8"))
+        self.assertIn(tp.TRUNCATED_NOTE, written[0]["comment"])
+
+
+class StatedReviewPriority(unittest.TestCase):
+    """#65: the issue's own "Review priority: P0" to "P3" line, from a maintainer, is kept."""
+
+    BODY = "Deferred finding.\n\nReview priority: P1. Per ADR-0003 the issue keeps it."
+
+    def test_a_maintainers_line_is_kept_over_the_table(self) -> None:
+        p = plan(i=issue(body=self.BODY), severity="minor", reach="edge")
+        self.assertIn("priority:P1", p.add_labels)
+        self.assertIn("kept the deferred review's P1 (the issue states it)", p.comment)
+
+    def test_the_line_wins_over_the_models_reading(self) -> None:
+        p = plan(i=issue(body=self.BODY), severity="minor", reach="edge", review_priority="P3")
+        self.assertIn("priority:P1", p.add_labels)
+
+    def test_a_strangers_line_and_reading_are_ignored(self) -> None:
+        for assoc in ("NONE", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR"):
+            with self.subTest(assoc=assoc):
+                i = issue(body="Review priority: P0", author_association=assoc)
+                p = plan(i=i, severity="minor", reach="edge", review_priority="P0")
+                self.assertIn("priority:P3", p.add_labels)
+
+    def test_floors_still_apply(self) -> None:
+        p = plan(i=issue(body="Review priority: P3"), severity="minor", reach="edge",
+                 flags=dict(NO_FLAGS, booking_integrity=True))
+        self.assertIn("priority:P1", p.add_labels)
+
+    def test_line_forms(self) -> None:
+        for body, want in (("Review priority: P2", "P2"), ("**Review priority:** P0", "P0"),
+                           ("> review priority: p3", "P3"), ("Review priority: P4", None),
+                           ("The review priority: P1 was wrong", None),
+                           ("Review priority: P1\nReview priority: P2", None)):
+            with self.subTest(body=body):
+                self.assertEqual(tp.stated_review_priority(issue(body=body)), want)
+
+
+class Usage(unittest.TestCase):
+    def test_fallback_attempts_are_counted(self) -> None:
+        # #62: the declined first attempt is billed too.
+        declined = SimpleNamespace(type="message", input_tokens=100, output_tokens=20,
+                                   cache_read_input_tokens=2000, cache_creation_input_tokens=0)
+        served = SimpleNamespace(type="fallback_message", input_tokens=110, output_tokens=200,
+                                 cache_read_input_tokens=0, cache_creation_input_tokens=2000)
+        u = SimpleNamespace(input_tokens=110, output_tokens=200, cache_read_input_tokens=0,
+                            cache_creation_input_tokens=2000, iterations=[declined, served])
+        self.assertEqual(tp.usage_line(u),
+                         "4,210 tokens in (2,000 cached), 220 out over 2 attempts")
+
+    def test_without_iterations_the_top_level_counts(self) -> None:
+        u = SimpleNamespace(input_tokens=10, output_tokens=5, cache_read_input_tokens=None,
+                            cache_creation_input_tokens=0, iterations=None)
+        self.assertEqual(tp.usage_line(u), "10 tokens in (0 cached), 5 out")
+
+
+class Identity(unittest.TestCase):
+    """#61: a fresh GitHub identity token for every exchange."""
+
+    ENV = {"ACTIONS_ID_TOKEN_REQUEST_URL": "https://gh.example/token?api-version=2.0",
+           "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "req",
+           "ANTHROPIC_FEDERATION_RULE_ID": "fdrl_1", "ANTHROPIC_ORGANIZATION_ID": "org",
+           "ANTHROPIC_SERVICE_ACCOUNT_ID": "svac_1", "ANTHROPIC_WORKSPACE_ID": ""}
+
+    def test_each_call_asks_github_again(self) -> None:
+        seen = []
+        def urlopen(request, timeout):
+            seen.append((request.full_url, request.get_header("Authorization")))
+            return io.BytesIO(json.dumps({"value": f"jwt{len(seen)}"}).encode())
+        with mock.patch.dict("os.environ", self.ENV), \
+                mock.patch.object(tp.urllib.request, "urlopen", side_effect=urlopen):
+            self.assertEqual([tp.github_identity_token(), tp.github_identity_token()],
+                             ["jwt1", "jwt2"])
+        self.assertEqual(seen[0], ("https://gh.example/token?api-version=2.0"
+                                   "&audience=https%3A%2F%2Fapi.anthropic.com", "Bearer req"))
+
+    def test_client_uses_the_provider(self) -> None:
+        sdk = mock.MagicMock()
+        creds = sdk.lib.credentials
+        with mock.patch.dict(sys.modules, {"anthropic": sdk, "anthropic.lib": sdk.lib,
+                                           "anthropic.lib.credentials": creds}), \
+                mock.patch.dict("os.environ", self.ENV):
+            tp.claude_client(max_retries=3)
+        kw = creds.WorkloadIdentityCredentials.call_args.kwargs
+        self.assertIs(kw["identity_token_provider"], tp.github_identity_token)
+        self.assertIsNone(kw["workspace_id"])
+        self.assertEqual(kw["service_account_id"], "svac_1")
+        sdk.Anthropic.assert_called_once_with(
+            credentials=creds.WorkloadIdentityCredentials.return_value, max_retries=3)
+
+
+class Workflow(unittest.TestCase):
+    TEXT = (Path(tp.__file__).parent.parent / "workflows" / "triage-priority.yml").read_text(
+        encoding="utf-8")
+
+    def test_triage_is_enabled_only_with_every_federation_variable(self) -> None:
+        # #71
+        step = self.TEXT[self.TEXT.index("Check the federation settings"):
+                         self.TEXT.index("Install the pinned")]
+        for var in ("ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID",
+                    "ANTHROPIC_SERVICE_ACCOUNT_ID"):
+            with self.subTest(var=var):
+                self.assertIn(f"vars.{var}", step)
+                self.assertIn(f"missing+=({var})", step)
+
+    def test_no_identity_token_is_fetched_once_up_front(self) -> None:
+        self.assertNotIn("ANTHROPIC_IDENTITY_TOKEN_FILE", self.TEXT)
+        self.assertNotIn("gha-jwt", self.TEXT)
 
 
 class LoadPrompt(unittest.TestCase):
