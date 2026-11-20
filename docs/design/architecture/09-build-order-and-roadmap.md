@@ -44,7 +44,7 @@ are the contracts between the ledger package and the rest (section 5.1).
 | 1 | B0 | [ADR-0005](../adr/0005-relicense-gpl-2-or-later.md) accepted and the licence files changed. Spikes, recorded as tests: a reader that emits `coa` and `corpus` from a synthetic ledger; content-hash stability; the root-name options check; what Fava and common editors do when the owned file is replaced under them | The licence, and the facts the write path rests on | planned. ADR-0005 is Proposed; no code imports `beancount` yet. The `coa` contract in `contracts.py` still has the earlier GnuCash shape and changes here |
 | 2 | B1 | Conversion of the GnuCash book (proposal 0005 §14): a full export, a writer that turns it into ledger files, a reviewed decision file, mechanical verification | The converted ledger equals the book. **Decision point: proposal 0005 is accepted or reworked.** | planned — human-run, attended |
 | 3 | 2 + R1 | Corpus, rule mining, kNN, rolling-origin backtest harness. The `corpus` contract is unchanged, so this can run on a corpus from the GnuCash export and need not wait for B1 | **The premise**: mined rules decide the head at measured held-out precision, and history is dense and consistent enough for kNN (k-nearest-neighbour) to abstain reliably on the **residual** the rules leave, measured on novel memos. No writes, no LLM (large language model). **Decision point; proposal 0004 is accepted or reworked on this result.** | partly built. Implemented, with tests: the `corpus` contract (parse and serialise), the normaliser with its profiles, the kNN index with both gates, and the rolling-origin backtest with the token-Bayes control and the novel-stratum sweep, run as `python -m autobook.pipeline.trial backtest`. Not yet built: the reader that produces a corpus from a ledger, rule mining (R1), and the `autobook` command itself. The tests use synthetic corpora; no report on real history is recorded yet, so the decision is open |
-| 4 | D2 | Linkage backtest | **The second premise**: linked bills resolve a meaningful share of the residual. Read-only. **Decision point** for D3 and D4; **proposal 0002 is accepted or revised on this report.** | planned |
+| 4 | D0 + D2 | Paperless spikes for bills, then the linkage backtest | **The second premise**: linked bills resolve a meaningful share of the residual. Read-only. **Decision point** for D3 and D4; **proposal 0002 is accepted or revised on this report.** | planned |
 | 5 | 3 | OFX input, admission, staging, dedup | Statements become staged lines with stable keys; a bad statement is rejected whole | planned |
 | 6 | 6 + R2 | Review file with its strict parser; rules file, rule engine and the candidate file for accepting mined rules | **The loop closes here**: real statements in, accepted rules first, proposals shown, decisions recorded. Until the writer exists, `autobook decide` records the saved review file's decisions to staging and nothing is written, so shadow mode is the default state | planned |
 | 7 | 4 | Correlation pass: transfers within and across batches, `match_existing` | No transfer booked twice, within a batch or across batches | planned |
@@ -61,9 +61,10 @@ built on it. Proposal 0005 is accepted when B0 and B1 have reported.
 Dropped from the earlier order: step 0's GnuCash spikes, step 1 (Scheduled
 Transactions; Beancount has none, and recurring debits are ordinary rule
 candidates), D1 (statements from paperless, which is the driver's job now), and
-the windows of step 9. Proposal 0005 does not say where the paperless spikes of
-0002's D0 go; those that bill matching depends on have to be settled before D2
-can report.
+the windows of step 9. The paperless spikes of proposal 0002's D0 that concern
+bills (document history and its actor, custom-field queries, whether every
+other document has an owner) are done with D2, before it reports. D0's spikes on
+statement files and on setting a document link no longer apply.
 
 **Tests.** Everything runs in `nox -s gate` against synthetic ledgers in
 temporary directories, on every supported Python version. The Docker test

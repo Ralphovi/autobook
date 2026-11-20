@@ -795,7 +795,7 @@ survives, because issues refer to them.
 | 1 | **B0** | ADR-0005 accepted and the licence files changed (§13). Spikes, recorded as tests: a reader that emits `coa` and `corpus` from a synthetic ledger; content-hash stability; the root-name options check; what Fava and common editors do when the owned file is replaced under them. | The licence, and the facts the write path rests on. |
 | 2 | **B1** | Conversion (§14). Human-run, attended. | The converted ledger equals the book. **Decision point: this proposal is accepted or reworked.** |
 | 3 | 2 + R1 | Corpus, rule mining, kNN, rolling-origin backtest. No writes, no LLM. The corpus contract is unchanged, so this can run on a corpus from the GnuCash export and need not wait for B1. | **The premise**: mined rules decide the head at measured precision, and history is dense and consistent enough for kNN to abstain reliably on the rest. **Decision point.** |
-| 4 | D2 | Linkage backtest (proposal 0002). | Whether linked bills resolve a meaningful share of the residual. **Decision point for 0002.** |
+| 4 | D0 + D2 | The paperless spikes of proposal 0002's D0 that concern bills, then the linkage backtest. | Whether linked bills resolve a meaningful share of the residual. **Decision point for 0002.** |
 | 5 | 3 | OFX input, admission, staging, dedup. | Statements become staged lines with stable keys; a bad statement is rejected whole. |
 | 6 | 6 + R2 | Review file with its strict parser; rules file, rule engine, candidate file for mined rules. | **The loop closes**: statements in, proposals shown, decisions recorded. Nothing is written yet, so shadow mode is the default state. |
 | 7 | 4 | Correlation: transfers within and across batches, `match_existing`. | No transfer booked twice. |
@@ -808,7 +808,8 @@ survives, because issues refer to them.
 Step 4 comes before step 5 for a reason that is not preference: a writer
 without the correlation pass double-books every transfer.
 
-Dropped from the earlier order: step 0's GnuCash spikes, step 1 (Scheduled
+Dropped from the earlier order: step 0's GnuCash spikes, D0's spikes on
+statement files and on setting a document link, step 1 (Scheduled
 Transactions), D1 (statements from paperless — the driver's now), and the
 windows of step 9.
 

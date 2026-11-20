@@ -10,9 +10,8 @@ tags:
 
 > Living document. The design is
 > [proposal 0005](../proposals/draft/0005-beancount-ledger.md); its §17 lists the
-> rules for anyone writing code, which replace the GnuCash-specific hard rules in
-> [`AGENTS.md`](../../../AGENTS.md) when the writer is built. The classification,
-> privacy and review-file rules in `AGENTS.md` are unchanged. This section
+> rules for anyone writing code, and [`AGENTS.md`](../../../AGENTS.md) states them
+> in full. This section
 > explains how the rules fit together.
 
 Terms used throughout: the **ledger** is the user's Beancount v3 plain-text
