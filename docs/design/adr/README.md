@@ -52,6 +52,7 @@ frontmatter, and both sides of every supersession agree. Run
 | [0002](0002-gpl-license-and-dco.md) | GPL-3.0-or-later, and the DCO | Accepted | Whole repo GPL; the PDCA harness stays Apache-2.0 |
 | [0003](0003-issue-priority-and-automated-triage.md) | Issue priority and automated triage: severity × reach set P0–P3; a GitHub Action applies it with one Claude API call per issue | Proposed | Booking-integrity and security/privacy overrides; Workload Identity Federation; a real IBAN is never sent to the model |
 | [0004](0004-proposal-and-spec-process.md) | Proposal and specification process, lifecycle, and immutability | Proposed | Supersession is recorded in each class index; frozen files are never edited |
+| [0005](0005-relicense-gpl-2-or-later.md) | Relicense as GPL-2.0-or-later; the DCO stays | Proposed | Supersedes 0002 when accepted. Beancount is GPL-2.0-only; Apache-2.0 dependencies become unavailable |
 
 ## Decisions not yet recorded here
 

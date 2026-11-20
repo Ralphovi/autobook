@@ -21,6 +21,7 @@ Start one from [`../templates/proposal.md`](../templates/proposal.md).
 | [0002](draft/0002-document-driven-booking-via-paperless.md) | Document-driven booking — statements and bills from paperless-ngx | — |
 | [0003](draft/0003-windowed-interface-and-command-line.md) | Windowed interface, user journey and command line | [#73](https://github.com/Ralphovi/autobook/issues/73) |
 | [0004](draft/0004-rules-first-mined-from-history.md) | Rules first — mined from history | [#92](https://github.com/Ralphovi/autobook/issues/92) |
+| [0005](draft/0005-beancount-ledger.md) | Autobook: OFX statements into a Beancount ledger — the whole system design; replaces 0001 and 0003 | [#100](https://github.com/Ralphovi/autobook/issues/100) |
 
 ## Accepted
 
@@ -50,6 +51,16 @@ Proposal 0004 amends 0001 the way 0002 does: the rules tier is built first and
 mined from the user's history, and kNN is judged on the residual. Its milestones
 R1 and R2 ride on 0001's steps 2 and 6, so the execution order keeps its
 sequence. It is accepted when R1, rule mining in the backtest, has reported.
+
+Proposal 0005 is a new whole-system design and is self-contained. Autobook is
+handed OFX statements and books them into a Beancount v3 plain-text ledger; the
+GnuCash book is converted once and retired; an outside driver fetches and
+converts statements. It replaces 0001 and 0003, which stay in `draft/` untouched
+and are withdrawn when 0005 is accepted. 0002 and 0004 still apply, read against
+0005, with the changes its *Relation to the other proposals* section lists. It
+is accepted when its milestones B0 (the relicensing ADR and the spikes) and B1
+(the conversion, verified against the book) have reported. Until then the
+architecture chapters and `AGENTS.md` describe the GnuCash design.
 
 The proposals describe *what* each build step contains. The order in which the
 steps are carried out is decided in one place:

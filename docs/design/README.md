@@ -50,7 +50,10 @@ amended by [proposal 0002](proposals/draft/0002-document-driven-booking-via-pape
 (statements and bills from paperless-ngx). For the rows in 0002's *Changes to
 proposal 0001* table, 0002 governs.
 [Proposal 0003](proposals/draft/0003-windowed-interface-and-command-line.md)
-adds the command line's verbs and contract and GTK4 windows as their client. The order in which the build steps are
+adds the command line's verbs and contract and GTK4 windows as their client. 
+[Proposal 0005](proposals/draft/0005-beancount-ledger.md) is a draft of a new
+whole-system design: OFX statements into a Beancount ledger. If accepted it
+replaces 0001 and 0003. The order in which the build steps are
 carried out is decided in
 [architecture section 9](architecture/09-build-order-and-roadmap.md), not in
 the proposals.
