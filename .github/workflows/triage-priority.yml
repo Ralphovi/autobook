@@ -10,7 +10,9 @@ name: Issue priority
 # (ADR-0003 sections 4 and 5). `classify` runs the model with a read-only token and
 # writes the plan as an artifact; it cannot write to GitHub. `apply` has `issues: write`,
 # runs no model and installs no SDK, and checks every label in the plan against
-# labels.json before writing.
+# labels.json before writing. A back-fill adds a third job, `dispatch`, which runs no model
+# and only starts one run of this workflow per issue (actions: write), so every issue is
+# triaged in its own concurrency group.
 #
 # An issue holding a checksum-valid IBAN, a credential of a known shape or a GnuCash
 # account path is not sent to the model at all: the classify job checks for them before
@@ -33,14 +35,6 @@ name: Issue priority
 # which covers issue events and manual runs from main but not pull requests or other
 # branches.
 
-# The run is named after its issue, so a back-fill can tell which issues another run is
-# triaging (triage_priority.active_issue_runs, #70). The number is only ever digits here.
-run-name: >-
-  ${{ (github.event.issue.number || inputs.issue)
-      && format('Issue priority: issue #{0}', github.event.issue.number || inputs.issue)
-      || (github.event_name == 'pull_request' && 'Issue priority: tests'
-          || 'Issue priority: back-fill') }}
-
 on:
   issues:
     types: [opened, reopened, edited]
@@ -51,7 +45,7 @@ on:
   workflow_dispatch:
     inputs:
       issue:
-        description: "Issue number to triage (empty = every open issue without a priority)"
+        description: "Issue number to triage (empty = back-fill: one run per open issue without a priority)"
         required: false
       limit:
         description: "Most issues to triage when no number is given"
@@ -69,11 +63,11 @@ on:
 permissions:
   contents: read
 
-# One group per issue; a back-fill has its own. They are not merged into one group: GitHub
-# keeps only one pending run per group, so issue events queued behind a back-fill would
-# cancel each other. Instead a back-fill leaves alone any issue another triage run is
-# queued for or running on, or that changed in the last 30 minutes, and drops its plan for
-# an issue that changed after it read it (#70).
+# One group per issue, so two runs never triage the same issue at once. A back-fill does
+# not classify anything in its own run: its `dispatch` job starts one run per issue, and
+# each of those joins its issue's group (#70). Sharing one group for everything would not
+# work: GitHub keeps only one pending run per group, so queued issue events would cancel
+# each other.
 concurrency:
   group: issue-priority-${{ github.event.issue.number || inputs.issue || github.event.pull_request.number || 'backfill' }}
   cancel-in-progress: false
@@ -93,16 +87,47 @@ jobs:
       - name: Unit tests (offline, no SDK needed)
         run: python -I -m unittest discover -s .github/triage -v
 
+  dispatch:
+    name: dispatch
+    # The back-fill: a manual run with no issue number that writes (not a dry run or check).
+    if: >-
+      github.event_name == 'workflow_dispatch' && !inputs.issue && !inputs.dry_run
+      && !inputs.check
+    runs-on: ubuntu-latest
+    # Finds the issues and starts a run of this workflow for each; runs no model and
+    # writes nothing to issues. `actions: write` is what starting a run needs.
+    permissions:
+      contents: read
+      issues: read
+      actions: write
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+      - name: Start one triage run per issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_LIMIT: ${{ inputs.limit }}
+          REF: ${{ github.ref_name }}
+        # The script rejects a limit below 1 (#68).
+        run: python -I .github/triage/triage_priority.py dispatch --limit "${INPUT_LIMIT:-20}" --ref "$REF"
+
   classify:
     name: classify
-    if: github.event_name != 'pull_request' && github.actor != 'dependabot[bot]'
+    # Issue events, a manual run for one issue, a check, or a back-fill dry run.
+    if: >-
+      github.event_name != 'pull_request' && github.actor != 'dependabot[bot]'
+      && (github.event_name != 'workflow_dispatch' || inputs.issue || inputs.dry_run
+          || inputs.check)
     runs-on: ubuntu-latest
     # Read-only: this job runs the model, so it must not hold a token that can write.
     permissions:
       contents: read
       issues: read
-      # To see which issues other triage runs are on (back-fill only, #70).
-      actions: read
       id-token: write
     timeout-minutes: 15
     outputs:
@@ -188,7 +213,8 @@ jobs:
           elif [ -n "${INPUT_ISSUE:-}" ]; then
             args+=(--issue "$INPUT_ISSUE")
           else
-            # The script rejects a limit below 1 (#68).
+            # Only a dry run gets here without an issue; a back-fill that writes runs
+            # through the dispatch job. The script rejects a limit below 1 (#68).
             args+=(--all --limit "${INPUT_LIMIT:-20}")
           fi
           if [ "${INPUT_DRY_RUN:-false}" = "true" ]; then
@@ -220,7 +246,6 @@ jobs:
     permissions:
       contents: read
       issues: write
-      actions: read
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

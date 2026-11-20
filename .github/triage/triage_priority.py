@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Automated issue priority triage (ADR-0003 sections 4 and 5).
 
-Two commands, run by two jobs of .github/workflows/triage-priority.yml, because GitHub
-scopes the token's permissions per job (ADR-0003 sections 4 and 5):
+Three commands, run by three jobs of .github/workflows/triage-priority.yml, because
+GitHub scopes the token's permissions per job (ADR-0003 sections 4 and 5):
 
     classify   reads issues, asks Claude once per issue, writes the plan as JSON.
                Runs with a read-only token; the only other credential is the Claude API
@@ -12,6 +12,9 @@ scopes the token's permissions per job (ADR-0003 sections 4 and 5):
     apply      reads that plan, checks every label against the fixed sets in
                labels.json, and applies labels, an assignee and one comment. Runs with
                issues: write and never imports the Anthropic SDK or calls a model.
+    dispatch   the back-fill: finds open issues without a priority and starts one run of
+               the workflow per issue, so each is triaged in its own issue's concurrency
+               group. Runs with issues: read and actions: write; no model, no issue writes.
 
 For each issue that has no `priority:*` label, the model returns a JSON verdict (type,
 severity, reach, area, flags, the review priority of a deferred finding). The priority
@@ -23,6 +26,7 @@ labelled but not restated (ADR-0003 section 4).
 
     triage_priority.py classify --issue 42 --out plan.json
     triage_priority.py classify --all --limit 20 --dry-run
+    triage_priority.py dispatch --limit 20
     triage_priority.py apply --plan plan.json
 Tests: python -I -m unittest discover -s .github/triage
 """
@@ -39,7 +43,6 @@ import sys
 import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -66,10 +69,6 @@ MAX_RETRIES = 2
 # A back-fill scans at most this many open issues, in pages of BACKFILL_PAGE.
 MAX_SCAN = 500
 BACKFILL_PAGE = 50
-# A back-fill leaves an issue alone that changed this recently: an issue event's own run
-# (opened, reopened, edited) may still be classifying it, and both would comment. The
-# window is longer than both jobs' timeouts together (15 + 10 minutes).
-BACKFILL_QUIET = timedelta(minutes=30)
 # Only these authors can name a deferred review's priority in an issue; a stranger
 # writing "Review priority: P0" gets the table like any other issue.
 TRUSTED_AUTHORS = ("OWNER", "MEMBER", "COLLABORATOR")
@@ -190,8 +189,8 @@ def validate(verdict: dict, areas: list[str]) -> dict:
             raise InvalidVerdict(f"areas {verdict['areas']!r}")
         # One or two (#60). The schema can only say "at least one"; the upper bound is
         # checked here, and a third area is an answer that did not follow the rules.
-        if not 1 <= len(set(chosen)) <= 2:
-            raise InvalidVerdict(f"{len(set(chosen))} areas")
+        if not 1 <= len(chosen) <= 2:
+            raise InvalidVerdict(f"{len(chosen)} areas")
         flags = {f: verdict["flags"][f] is True for f in FLAGS}
         # A vulnerability report is a security issue, so it gets the security floor even
         # when the model left that flag off (ADR-0003 section 5).
@@ -349,22 +348,12 @@ class Issue:
     author_is_bot: bool = False
     triage_count: int = 0  # the workflow's own triage comments on the issue
     author_association: str = "NONE"  # OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE ...
-    updated_at: str = ""  # ISO 8601, as GitHub reports it
 
 
 def text_hash(issue: Issue) -> str:
     """Fingerprint of the text the model reads, so the apply job can tell an edit made
     while the model ran."""
     return hashlib.sha256(f"{issue.title}\0{issue.body or ''}".encode("utf-8")).hexdigest()
-
-
-def recently_updated(issue: Issue, now: datetime | None = None) -> bool:
-    """True when the issue changed within BACKFILL_QUIET, or its time cannot be read."""
-    try:
-        updated = datetime.fromisoformat(issue.updated_at.replace("Z", "+00:00"))
-    except ValueError:
-        return True
-    return (now or datetime.now(timezone.utc)) - updated < BACKFILL_QUIET
 
 
 @dataclass
@@ -381,10 +370,6 @@ class Plan:
     # The text that was classified (text_hash); the apply job drops the plan when the
     # issue's text changed since, and the run for that edit classifies the new text.
     text_hash: str = ""
-    # A back-fill plan also records when the issue last changed, and is dropped when it
-    # changed at all since: an issue event's run may be triaging it at the same time.
-    backfill: bool = False
-    updated_at: str = ""
 
 
 def skip_reason(issue: Issue, retry: bool = False) -> str | None:
@@ -435,8 +420,7 @@ def build_plan(issue: Issue, verdict: dict, config: dict, *, model: str, usage: 
         reasons = {k: "Not restated here; see the note below." for k in verdict["reasons"]}
     else:
         reasons = {k: scrub(v, issue_text) for k, v in verdict["reasons"].items()}
-    plan, rows = Plan(number=issue.number, text_hash=text_hash(issue),
-                      updated_at=issue.updated_at), []
+    plan, rows = Plan(number=issue.number, text_hash=text_hash(issue)), []
 
     have_type = [t for t in TYPES if t in issue.labels]
     kind = have_type[0] if have_type else verdict["type"]
@@ -539,7 +523,7 @@ def unclassified_plan(issue: Issue, why: str, *, model: str, usage: str,
         lines += ["", TRUNCATED_NOTE]
     lines += ["", f"<sub>{model} · {usage}</sub>"]
     return Plan(number=issue.number, add_labels=["needs-triage"], comment="\n".join(lines) + "\n",
-                text_hash=text_hash(issue), updated_at=issue.updated_at)
+                text_hash=text_hash(issue))
 
 
 # --- a real IBAN is never sent to the model -----------------------------------------------
@@ -639,7 +623,7 @@ def held_back_plan(issue: Issue, reason: str = "iban") -> Plan:
         MARKER,
         f"**Automated triage** did not read this issue: {found}, so it was not sent to "
         f"the model. {ask} The issue is triaged again after the edit.",
-    ]) + "\n", text_hash=text_hash(issue), updated_at=issue.updated_at)
+    ]) + "\n", text_hash=text_hash(issue))
 
 
 # --- the plan handed from the classify job to the apply job -------------------------------
@@ -661,8 +645,6 @@ def check_plan(entry: dict, config: dict) -> Plan:
         retry = entry["retry"]
         triage_count = entry["triage_count"]
         digest = entry["text_hash"]
-        backfill = entry["backfill"]
-        updated_at = entry["updated_at"]
     except (KeyError, TypeError) as e:
         raise InvalidPlan(f"missing field: {e}") from e
     if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
@@ -691,13 +673,9 @@ def check_plan(entry: dict, config: dict) -> Plan:
         raise InvalidPlan(f"triage count {triage_count!r}")
     if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
         raise InvalidPlan(f"text hash {digest!r}")
-    if not isinstance(backfill, bool):
-        raise InvalidPlan(f"backfill {backfill!r}")
-    if not isinstance(updated_at, str) or len(updated_at) > 40:
-        raise InvalidPlan(f"updated_at {updated_at!r}")
     return Plan(number=number, add_labels=list(labels), remove_labels=list(remove),
                 assignee=assignee, comment=comment, retry=retry, triage_count=triage_count,
-                text_hash=digest, backfill=backfill, updated_at=updated_at)
+                text_hash=digest)
 
 
 def write_plans(path: Path, plans: list[Plan]) -> None:
@@ -840,7 +818,6 @@ def fetch_issue(repo: str, number: int) -> Issue:
         author_is_bot=(data.get("user") or {}).get("type") == "Bot",
         triage_count=triage_comments(flat),
         author_association=data.get("author_association") or "NONE",
-        updated_at=data.get("updated_at") or "",
     )
 
 
@@ -854,7 +831,6 @@ query($owner: String!, $name: String!, $first: Int!, $cursor: String) {
       pageInfo { hasNextPage endCursor }
       nodes {
         number
-        updatedAt
         author { __typename login }
         labels(first: 100) { nodes { name } }
         comments(first: 100) { totalCount nodes { author { __typename login } body } }
@@ -881,15 +857,13 @@ def _backfill_issue(node: dict) -> Issue | None:
                          if MARKER in (c.get("body") or "")
                          and (c.get("author") or {}).get("__typename") == "Bot"
                          and (c.get("author") or {}).get("login") == GRAPHQL_BOT_LOGIN),
-        updated_at=node.get("updatedAt") or "",
     )
 
 
 def open_untriaged(repo: str, limit: int) -> list[int]:
     """Up to ``limit`` open issues a back-fill should triage, oldest first. The limit is
     applied after skipping, so issues that stay without a priority after their one
-    automated pass (needs-triage, or a type with no priority) never fill a batch. An
-    issue that changed within BACKFILL_QUIET is left to its own event run (#70)."""
+    automated pass (needs-triage, or a type with no priority) never fill a batch."""
     owner, name = repo.split("/", 1)
     numbers, cursor, scanned = [], None, 0
     while len(numbers) < limit and scanned < MAX_SCAN:
@@ -906,7 +880,7 @@ def open_untriaged(repo: str, limit: int) -> list[int]:
                    for l in (node.get("labels") or {}).get("nodes") or []):
                 continue
             candidate = _backfill_issue(node) or fetch_issue(repo, node["number"])
-            if skip_reason(candidate) is None and not recently_updated(candidate):
+            if skip_reason(candidate) is None:
                 numbers.append(candidate.number)
         if not page["pageInfo"]["hasNextPage"]:
             break
@@ -914,28 +888,18 @@ def open_untriaged(repo: str, limit: int) -> list[int]:
     return numbers
 
 
-# The workflow names each run after its issue (`run-name:` in triage-priority.yml), so a
-# back-fill can see which issues another run is triaging right now (#70).
+# A back-fill does not classify issues itself: it starts one run of this workflow per
+# issue. Each run then sits in its issue's concurrency group with the issue events' runs,
+# so no two triage runs ever work on the same issue at once (#70). A back-fill that
+# classified in its own run could not share those groups: GitHub keeps only one pending
+# run per group, so issue events queued behind it would cancel each other.
 WORKFLOW_FILE = "triage-priority.yml"
-_RUN_ISSUE = re.compile(r"\bissue #(\d+)$")
-ACTIVE_STATUSES = ("requested", "queued", "pending", "waiting", "in_progress")
 
 
-def active_issue_runs(repo: str) -> set[int]:
-    """Issues that a triage run other than this one is queued for or running on. A
-    back-fill gives way to them: GitHub keeps one pending run per concurrency group, so
-    the back-fill cannot simply share the issue runs' groups."""
-    me = os.environ.get("GITHUB_RUN_ID", "")
-    numbers = set()
-    for status in ACTIVE_STATUSES:
-        data = json.loads(gh("api", f"repos/{repo}/actions/workflows/{WORKFLOW_FILE}/runs"
-                                    f"?status={status}&per_page=100"))
-        for run in data.get("workflow_runs") or []:
-            if str(run.get("id")) == me:
-                continue
-            if (m := _RUN_ISSUE.search(run.get("display_title") or "")):
-                numbers.add(int(m.group(1)))
-    return numbers
+def dispatch_runs(repo: str, numbers: list[int], ref: str) -> None:
+    for number in numbers:
+        gh("workflow", "run", WORKFLOW_FILE, "-R", repo, "--ref", ref, "-f", f"issue={number}")
+        print(f"#{number}: triage run started")
 
 
 def ensure_labels(repo: str, config: dict) -> None:
@@ -966,10 +930,6 @@ def _apply_skip(plan: Plan, fresh: Issue) -> str | None:
         # The author edited while the model ran (#58). The run that edit queued
         # classifies the new text; this plan is for the old one.
         return "the issue text changed after it was classified"
-    if plan.backfill and fresh.updated_at != plan.updated_at:
-        # An issue event may be triaging it now (#70); a back-fill gives way, and the
-        # next back-fill picks the issue up if nobody else does.
-        return "the issue changed since the back-fill read it"
     return skip_reason(fresh, retry=plan.retry)
 
 
@@ -983,9 +943,6 @@ def apply_plan(repo: str, plan: Plan) -> bool:
     fresh = fetch_issue(repo, plan.number)
     if (why := _apply_skip(plan, fresh)):
         print(f"#{plan.number}: skipped at apply time ({why})")
-        return False
-    if plan.backfill and plan.number in active_issue_runs(repo):
-        print(f"#{plan.number}: skipped at apply time (another triage run is on it)")
         return False
     number = str(plan.number)
     added = [l for l in plan.add_labels if l not in fresh.labels]
@@ -1057,8 +1014,8 @@ def load_prompt(path: Path = HERE / "prompt.md") -> str:
 
 
 def _stamp(plan: Plan, issue: Issue, args) -> Plan:
-    """Record on the plan how this run was started; the builders record the text and time."""
-    plan.retry, plan.triage_count, plan.backfill = args.retry, issue.triage_count, args.all
+    """Record on the plan how this run was started; the builders record the text."""
+    plan.retry, plan.triage_count = args.retry, issue.triage_count
     return plan
 
 
@@ -1073,7 +1030,6 @@ def run_classify(args) -> int:
     client = claude_client(max_retries=3, timeout=120)
 
     numbers = open_untriaged(args.repo, args.limit) if args.all else [args.issue]
-    busy = active_issue_runs(args.repo) if args.all and numbers else set()
     if not numbers:
         print("no open issues without a priority")
     plans, failed = [], 0
@@ -1082,10 +1038,6 @@ def run_classify(args) -> int:
             issue = fetch_issue(args.repo, number)
             if (why := skip_reason(issue, retry=args.retry)):
                 print(f"#{number}: skipped ({why})")
-                continue
-            if args.all and (recently_updated(issue) or number in busy):
-                # It changed after the scan, or another run is on it; that run triages it (#70).
-                print(f"#{number}: skipped (changed recently or another triage run is on it)")
                 continue
             if (held := hold_back_reason(f"{issue.title}\n{issue.body or ''}")):
                 plan = _stamp(held_back_plan(issue, held), issue, args)
@@ -1146,6 +1098,15 @@ def run_apply(args) -> int:
     return 1 if failed else 0
 
 
+def run_dispatch(args) -> int:
+    """The back-fill: find the open issues to triage and start one run for each (#70)."""
+    numbers = open_untriaged(args.repo, args.limit)
+    if not numbers:
+        print("no open issues without a priority")
+    dispatch_runs(args.repo, numbers, args.ref)
+    return 0
+
+
 def positive_int(text: str) -> int:
     """argparse type for --limit: a back-fill of zero or fewer issues is a mistake, and a
     negative one used to mean no cap at all (#68)."""
@@ -1165,7 +1126,8 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("classify", help="ask the model; write the plan, never GitHub")
     target = c.add_mutually_exclusive_group(required=True)
     target.add_argument("--issue", type=int)
-    target.add_argument("--all", action="store_true", help="open issues without a priority")
+    target.add_argument("--all", action="store_true",
+                        help="open issues without a priority; only with --dry-run")
     c.add_argument("--limit", type=positive_int, default=20, help="cap for --all (1 or more)")
     c.add_argument("--dry-run", action="store_true", help="print the plan, write no file")
     c.add_argument("--out", help="where to write the plan (JSON)")
@@ -1173,10 +1135,18 @@ def main(argv: list[str] | None = None) -> int:
                    help="the issue was edited: retry it if it is at needs-triage")
     a = sub.add_parser("apply", help="check the plan and write it to GitHub; no model")
     a.add_argument("--plan", required=True)
+    d = sub.add_parser("dispatch", help="back-fill: start one triage run per open issue")
+    d.add_argument("--limit", type=positive_int, default=20, help="most issues (1 or more)")
+    d.add_argument("--ref", default="main", help="branch the runs start from")
     args = ap.parse_args(argv)
     if not args.repo:
         ap.error("--repo or $GITHUB_REPOSITORY is required")
-    return run_classify(args) if args.command == "classify" else run_apply(args)
+    if args.command == "classify" and args.all and not args.dry_run:
+        # A back-fill that writes goes through `dispatch`, one run per issue, so it never
+        # races an issue event's run (#70).
+        ap.error("classify --all only previews (--dry-run); use dispatch to back-fill")
+    commands = {"classify": run_classify, "apply": run_apply, "dispatch": run_dispatch}
+    return commands[args.command](args)
 
 
 if __name__ == "__main__":

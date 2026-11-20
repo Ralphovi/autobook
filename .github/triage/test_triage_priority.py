@@ -16,7 +16,6 @@ import sys
 import tempfile
 import unittest
 from dataclasses import asdict
-from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -47,7 +46,7 @@ def verdict(**over) -> dict:
 def issue(**over) -> tp.Issue:
     i = tp.Issue(number=7, title="Transfer between two own accounts is booked twice",
                  body="Steps: import both statements in one batch.", labels=set(), assignees=[],
-                 author_association="MEMBER", updated_at="2026-01-01T00:00:00Z")
+                 author_association="MEMBER")
     for k, val in over.items():
         setattr(i, k, val)
     return i
@@ -62,16 +61,13 @@ def prio(severity, reach, flags=None, review="none", labels=()):
     return tp.compute_priority(severity, reach, flags or NO_FLAGS, review, set(labels))
 
 
-def gh_stub(calls: list, fail=None, assignees=(), active=()):
+def gh_stub(calls: list, fail=None, assignees=()):
     """A fake `gh`: records each call, fails the ones ``fail`` picks, and answers the
-    reads apply makes (current assignees, other active triage runs)."""
+    read apply makes just before assigning."""
     def fake(*a, **k):
         calls.append(a)
         if fail and fail(a):
             raise subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 502")
-        if a[:1] == ("api",) and "/actions/" in a[1]:
-            return json.dumps({"workflow_runs": [
-                {"id": 1, "display_title": f"Issue priority: issue #{n}"} for n in active]})
         if a[:1] == ("api",):
             return json.dumps({"assignees": [{"login": x} for x in assignees]})
         return ""
@@ -163,6 +159,8 @@ class Validate(unittest.TestCase):
         # #60: a third area did not follow the rules; it is not cut silently.
         with self.assertRaises(tp.InvalidVerdict):
             tp.validate(verdict(areas=["correlator", "book", "review"]), AREAS)
+        with self.assertRaises(tp.InvalidVerdict):
+            tp.validate(verdict(areas=["book", "book", "review"]), AREAS)  # Codex review
         self.assertEqual(tp.validate(verdict(areas=["book", "book"]), AREAS)["areas"], ["book"])
 
     def test_no_area_is_rejected(self) -> None:
@@ -371,11 +369,13 @@ class RealIban(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d, \
                 mock.patch.dict(sys.modules, {"anthropic": sdk}), \
                 mock.patch.object(tp, "open_untriaged", return_value=[1, 2]), \
-                mock.patch.object(tp, "active_issue_runs", return_value=set()), \
                 mock.patch.object(tp, "fetch_issue", side_effect=fetch):
             out = Path(d) / "plan.json"
+            # The command line allows --all only as a preview; the function stays robust.
+            args = SimpleNamespace(repo="o/r", all=True, issue=None, limit=20, retry=False,
+                                   dry_run=False, out=str(out))
             with self.assertRaises(subprocess.CalledProcessError):
-                tp.main(["--repo", "o/r", "classify", "--all", "--out", str(out)])
+                tp.run_classify(args)
             written = json.loads(out.read_text(encoding="utf-8"))
         self.assertEqual([p["number"] for p in written], [1])
 
@@ -443,12 +443,9 @@ class Skip(unittest.TestCase):
         self.assertIsNone(tp.skip_reason(issue()))
 
 
-OLD = "2026-01-01T00:00:00Z"
-
-
-def node(number: int, labels=(), comments=(), total=None, updated=OLD, bot=False) -> dict:
+def node(number: int, labels=(), comments=(), total=None, bot=False) -> dict:
     """One issue as the back-fill's GraphQL query returns it."""
-    return {"number": number, "updatedAt": updated,
+    return {"number": number,
             "author": {"__typename": "Bot" if bot else "User", "login": "someone"},
             "labels": {"nodes": [{"name": l} for l in labels]},
             "comments": {"totalCount": len(comments) if total is None else total,
@@ -526,42 +523,37 @@ class Backfill(unittest.TestCase):
         self.assertEqual(found, [])
         fetch.assert_called_once_with("o/r", 1)
 
-    def test_leaves_a_recently_changed_issue_to_its_own_run(self) -> None:
-        # #70: an issue event's run may be classifying it right now.
-        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        nodes = [node(1, updated=now), node(2)]
-        self.assertEqual(self.scan(pages(nodes), 20)[0], [2])
+class Dispatch(unittest.TestCase):
+    """#70: a back-fill starts one run per issue, in that issue's concurrency group."""
 
+    def test_starts_one_run_per_issue(self) -> None:
+        calls = []
+        with mock.patch.object(tp, "open_untriaged", return_value=[4, 9]), \
+                mock.patch.object(tp, "gh", side_effect=gh_stub(calls)), mock.patch("sys.stdout"):
+            self.assertEqual(tp.main(["--repo", "o/r", "dispatch", "--limit", "5"]), 0)
+        self.assertEqual(calls, [
+            ("workflow", "run", "triage-priority.yml", "-R", "o/r", "--ref", "main",
+             "-f", "issue=4"),
+            ("workflow", "run", "triage-priority.yml", "-R", "o/r", "--ref", "main",
+             "-f", "issue=9")])
 
-class BackfillGivesWay(unittest.TestCase):
-    def test_classify_skips_an_issue_another_run_is_on(self) -> None:
-        # Codex review (#70): a manual run for one issue changes nothing on the issue.
-        sdk = mock.MagicMock()
-        with tempfile.TemporaryDirectory() as d, \
-                mock.patch.dict(sys.modules, {"anthropic": sdk}), \
-                mock.patch.dict("os.environ", {"ACTIONS_ID_TOKEN_REQUEST_URL": ""}), \
-                mock.patch.object(tp, "open_untriaged", return_value=[7]), \
-                mock.patch.object(tp, "active_issue_runs", return_value={7}), \
-                mock.patch.object(tp, "fetch_issue", return_value=issue()):
-            out = Path(d) / "plan.json"
-            tp.main(["--repo", "o/r", "classify", "--all", "--out", str(out)])
-            self.assertEqual(json.loads(out.read_text(encoding="utf-8")), [])
-        sdk.Anthropic.return_value.beta.messages.create.assert_not_called()
+    def test_classify_all_only_previews(self) -> None:
+        with self.assertRaises(SystemExit), mock.patch("sys.stderr"):
+            tp.main(["--repo", "o/r", "classify", "--all", "--out", "plan.json"])
 
-    def test_reads_the_issue_from_the_run_name(self) -> None:
-        runs = {"workflow_runs": [
-            {"id": 1, "display_title": "Issue priority: issue #12"},
-            {"id": 2, "display_title": "Issue priority: back-fill"},
-            {"id": 3, "display_title": "Issue priority: tests"},
-            {"id": 99, "display_title": "Issue priority: issue #13"}]}
-        with mock.patch.object(tp, "gh", return_value=json.dumps(runs)), \
-                mock.patch.dict("os.environ", {"GITHUB_RUN_ID": "99"}):
-            self.assertEqual(tp.active_issue_runs("o/r"), {12})
-
-    def test_the_workflow_names_runs_that_way(self) -> None:
-        text = Workflow.TEXT
-        self.assertIn("format('Issue priority: issue #{0}'", text)
-        self.assertEqual(text.count("actions: read"), 2)
+    def test_the_workflow_routes_a_backfill_through_dispatch(self) -> None:
+        jobs = Workflow.TEXT[Workflow.TEXT.index("\njobs:"):]
+        dispatch = jobs[jobs.index("  dispatch:"):jobs.index("  classify:")]
+        self.assertIn("actions: write", dispatch)
+        self.assertNotIn("id-token", dispatch)
+        self.assertNotIn("issues: write", dispatch)
+        self.assertIn("triage_priority.py dispatch", dispatch)
+        classify = jobs[jobs.index("  classify:"):jobs.index("  apply:")]
+        self.assertIn("inputs.issue || inputs.dry_run", classify)
+        self.assertNotIn("actions:", classify)
+        # Every run for one issue shares its group, the dispatched ones included.
+        self.assertIn("issue-priority-${{ github.event.issue.number || inputs.issue",
+                      Workflow.TEXT)
 
 
 class Limit(unittest.TestCase):
@@ -709,7 +701,7 @@ class ApplyCheck(unittest.TestCase):
                                          "priority:P1"],
              "remove_labels": [], "assignee": "eduralph", "comment": tp.MARKER + "\nok\n",
              "retry": False, "triage_count": 0, "text_hash": tp.text_hash(issue()),
-             "backfill": False, "updated_at": issue().updated_at}
+}
         e.update(over)
         return e
 
@@ -875,13 +867,13 @@ class HoldBack(unittest.TestCase):
 
 
 class ApplyRechecks(unittest.TestCase):
-    def apply_to(self, p: tp.Plan, fresh: tp.Issue, fail=None, after=None, assignees=(),
-                 active=()) -> list:
+    def apply_to(self, p: tp.Plan, fresh: tp.Issue, fail=None, after=None,
+                 assignees=()) -> list:
         """Apply ``p``; the issue reads as ``fresh``, and as ``after`` on any later read."""
         calls = []
         reads = iter([fresh] + [after or fresh] * 5)
         with mock.patch.object(tp, "fetch_issue", side_effect=lambda r, n: next(reads)), \
-                mock.patch.object(tp, "gh", side_effect=gh_stub(calls, fail, assignees, active)), \
+                mock.patch.object(tp, "gh", side_effect=gh_stub(calls, fail, assignees)), \
                 mock.patch("sys.stderr"):
             try:
                 tp.apply_plan("o/r", p)
@@ -953,30 +945,10 @@ class ApplyRechecks(unittest.TestCase):
         calls = self.apply_to(plan(), issue(), fail=lambda a: "--add-label" in a)
         self.assertFalse(any("--remove-label" in a for a in calls))
 
-    def test_a_backfill_plan_gives_way_to_another_run(self) -> None:
-        # Codex review (#70): a manual run for one issue does not change the issue.
-        p = plan()
-        p.backfill = True
-        self.assertEqual(self.apply_to(p, issue(), active=[7]), [])
-        self.assertTrue(self.apply_to(p, issue(), active=[8]))
-        # An event run applies regardless; the back-fill is the one that gives way.
-        self.assertTrue(self.apply_to(plan(), issue(), active=[7]))
-
     def test_assignee_comes_after_the_comment(self) -> None:
         calls = self.apply_to(plan(), issue())
         kinds = ["comment" if a[:2] == ("issue", "comment") else a[-2] for a in calls]
         self.assertEqual(kinds[-2:], ["comment", "--add-assignee"])
-
-    def test_a_backfill_plan_gives_way_to_any_change(self) -> None:
-        # #70: an issue event's run may be triaging the issue at the same time.
-        p = plan()
-        p.backfill = True
-        self.assertEqual(self.apply_to(p, issue(updated_at="2026-11-20T10:00:00Z")), [])
-        self.assertTrue(self.apply_to(p, issue()))
-
-    def test_an_event_plan_ignores_unrelated_changes(self) -> None:
-        # The `new` label workflow touches every new issue while the model runs.
-        self.assertTrue(self.apply_to(plan(), issue(updated_at="2026-11-20T10:00:00Z")))
 
     def test_one_failed_issue_does_not_stop_the_others(self) -> None:
         plans = [plan(i=issue(number=1)), plan(i=issue(number=2))]
