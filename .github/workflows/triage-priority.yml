@@ -33,6 +33,14 @@ name: Issue priority
 # which covers issue events and manual runs from main but not pull requests or other
 # branches.
 
+# The run is named after its issue, so a back-fill can tell which issues another run is
+# triaging (triage_priority.active_issue_runs, #70). The number is only ever digits here.
+run-name: >-
+  ${{ (github.event.issue.number || inputs.issue)
+      && format('Issue priority: issue #{0}', github.event.issue.number || inputs.issue)
+      || (github.event_name == 'pull_request' && 'Issue priority: tests'
+          || 'Issue priority: back-fill') }}
+
 on:
   issues:
     types: [opened, reopened, edited]
@@ -63,8 +71,9 @@ permissions:
 
 # One group per issue; a back-fill has its own. They are not merged into one group: GitHub
 # keeps only one pending run per group, so issue events queued behind a back-fill would
-# cancel each other. Instead a back-fill leaves alone any issue that changed in the last
-# 30 minutes, and drops its plan for an issue that changed after it read it (#70).
+# cancel each other. Instead a back-fill leaves alone any issue another triage run is
+# queued for or running on, or that changed in the last 30 minutes, and drops its plan for
+# an issue that changed after it read it (#70).
 concurrency:
   group: issue-priority-${{ github.event.issue.number || inputs.issue || github.event.pull_request.number || 'backfill' }}
   cancel-in-progress: false
@@ -92,6 +101,8 @@ jobs:
     permissions:
       contents: read
       issues: read
+      # To see which issues other triage runs are on (back-fill only, #70).
+      actions: read
       id-token: write
     timeout-minutes: 15
     outputs:
@@ -209,6 +220,7 @@ jobs:
     permissions:
       contents: read
       issues: write
+      actions: read
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

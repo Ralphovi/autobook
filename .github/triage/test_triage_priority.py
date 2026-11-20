@@ -62,6 +62,27 @@ def prio(severity, reach, flags=None, review="none", labels=()):
     return tp.compute_priority(severity, reach, flags or NO_FLAGS, review, set(labels))
 
 
+def gh_stub(calls: list, fail=None, assignees=(), active=()):
+    """A fake `gh`: records each call, fails the ones ``fail`` picks, and answers the
+    reads apply makes (current assignees, other active triage runs)."""
+    def fake(*a, **k):
+        calls.append(a)
+        if fail and fail(a):
+            raise subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 502")
+        if a[:1] == ("api",) and "/actions/" in a[1]:
+            return json.dumps({"workflow_runs": [
+                {"id": 1, "display_title": f"Issue priority: issue #{n}"} for n in active]})
+        if a[:1] == ("api",):
+            return json.dumps({"assignees": [{"login": x} for x in assignees]})
+        return ""
+    return fake
+
+
+def writes(calls: list) -> list:
+    """The calls that change the issue."""
+    return [a for a in calls if a[:1] != ("api",)]
+
+
 class Table(unittest.TestCase):
     def test_matches_adr_0003(self) -> None:
         expected = {
@@ -138,9 +159,11 @@ class Validate(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(tp.InvalidVerdict):
                 tp.validate(v, AREAS)
 
-    def test_at_most_two_areas(self) -> None:
-        got = tp.validate(verdict(areas=["correlator", "book", "review"]), AREAS)["areas"]
-        self.assertEqual(got, ["correlator", "book"])
+    def test_more_than_two_areas_is_rejected(self) -> None:
+        # #60: a third area did not follow the rules; it is not cut silently.
+        with self.assertRaises(tp.InvalidVerdict):
+            tp.validate(verdict(areas=["correlator", "book", "review"]), AREAS)
+        self.assertEqual(tp.validate(verdict(areas=["book", "book"]), AREAS)["areas"], ["book"])
 
     def test_no_area_is_rejected(self) -> None:
         # #60: an answer with no area leaves the issue without an area label or owner.
@@ -334,7 +357,7 @@ class RealIban(unittest.TestCase):
         self.assertEqual(len(written), 1)
         calls = []
         with mock.patch.object(tp, "fetch_issue", return_value=edited), \
-                mock.patch.object(tp, "gh", side_effect=lambda *a, **k: calls.append(a) or ""):
+                mock.patch.object(tp, "gh", side_effect=gh_stub(calls)):
             tp.apply_plan("o/r", tp.check_plan(written[0], CONFIG))
         self.assertTrue(any(a[:2] == ("issue", "comment") for a in calls))
 
@@ -348,6 +371,7 @@ class RealIban(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d, \
                 mock.patch.dict(sys.modules, {"anthropic": sdk}), \
                 mock.patch.object(tp, "open_untriaged", return_value=[1, 2]), \
+                mock.patch.object(tp, "active_issue_runs", return_value=set()), \
                 mock.patch.object(tp, "fetch_issue", side_effect=fetch):
             out = Path(d) / "plan.json"
             with self.assertRaises(subprocess.CalledProcessError):
@@ -507,6 +531,37 @@ class Backfill(unittest.TestCase):
         now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         nodes = [node(1, updated=now), node(2)]
         self.assertEqual(self.scan(pages(nodes), 20)[0], [2])
+
+
+class BackfillGivesWay(unittest.TestCase):
+    def test_classify_skips_an_issue_another_run_is_on(self) -> None:
+        # Codex review (#70): a manual run for one issue changes nothing on the issue.
+        sdk = mock.MagicMock()
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.dict(sys.modules, {"anthropic": sdk}), \
+                mock.patch.dict("os.environ", {"ACTIONS_ID_TOKEN_REQUEST_URL": ""}), \
+                mock.patch.object(tp, "open_untriaged", return_value=[7]), \
+                mock.patch.object(tp, "active_issue_runs", return_value={7}), \
+                mock.patch.object(tp, "fetch_issue", return_value=issue()):
+            out = Path(d) / "plan.json"
+            tp.main(["--repo", "o/r", "classify", "--all", "--out", str(out)])
+            self.assertEqual(json.loads(out.read_text(encoding="utf-8")), [])
+        sdk.Anthropic.return_value.beta.messages.create.assert_not_called()
+
+    def test_reads_the_issue_from_the_run_name(self) -> None:
+        runs = {"workflow_runs": [
+            {"id": 1, "display_title": "Issue priority: issue #12"},
+            {"id": 2, "display_title": "Issue priority: back-fill"},
+            {"id": 3, "display_title": "Issue priority: tests"},
+            {"id": 99, "display_title": "Issue priority: issue #13"}]}
+        with mock.patch.object(tp, "gh", return_value=json.dumps(runs)), \
+                mock.patch.dict("os.environ", {"GITHUB_RUN_ID": "99"}):
+            self.assertEqual(tp.active_issue_runs("o/r"), {12})
+
+    def test_the_workflow_names_runs_that_way(self) -> None:
+        text = Workflow.TEXT
+        self.assertIn("format('Issue priority: issue #{0}'", text)
+        self.assertEqual(text.count("actions: read"), 2)
 
 
 class Limit(unittest.TestCase):
@@ -671,7 +726,7 @@ class ApplyCheck(unittest.TestCase):
     def apply_to(self, p: tp.Plan, fresh: tp.Issue) -> list:
         calls = []
         with mock.patch.object(tp, "fetch_issue", return_value=fresh), \
-                mock.patch.object(tp, "gh", side_effect=lambda *a, **k: calls.append(a) or ""):
+                mock.patch.object(tp, "gh", side_effect=gh_stub(calls)):
             tp.apply_plan("o/r", p)
         return calls
 
@@ -764,6 +819,11 @@ class HoldBack(unittest.TestCase):
             "paperless:\n  token: " + "3f9a" * 4,
             'PASSWORD="hunter2hunter2"',
             "api_key = " + "Zq8v" * 3,
+            # Codex review: a prefixed key name.
+            "PAPERLESS_TOKEN=" + "abcd1234" + "efgh",
+            "AWS_SECRET_ACCESS_KEY=" + "Abcd1234" * 2,
+            "client_secret=" + "abcd1234",
+            '"token": "' + "abc12345x" + '"',
         ):
             with self.subTest(text=text[:20]):
                 self.assertEqual(tp.hold_back_reason(text), "secret")
@@ -772,13 +832,15 @@ class HoldBack(unittest.TestCase):
         for text in ("Set `token: <your paperless token>` in the config.",
                      "api_key = os.environ['KEY']", "GH_TOKEN: ${{ github.token }}",
                      "The password field is empty.", "token: changeme",
-                     "A read-only token works.", "author: someone else"):
+                     "A read-only token works.", "author: someone else",
+                     "The tokenizer: splits words1234", "x" * 60000):
             with self.subTest(text=text):
                 self.assertIsNone(tp.hold_back_reason(text))
 
     def test_account_paths_are_held_back(self) -> None:
         for text in ("booked to Ausgaben:Arzt", "Expenses:Medical:Dentist is wrong",
-                     "from Aktiva:Girokonto", "Einnahmen:Gehalt twice"):
+                     "from Aktiva:Girokonto", "Einnahmen:Gehalt twice",
+                     "expenses:Medical", "AUSGABEN:Arzt"):
             with self.subTest(text=text):
                 self.assertEqual(tp.hold_back_reason(text), "account")
 
@@ -813,20 +875,19 @@ class HoldBack(unittest.TestCase):
 
 
 class ApplyRechecks(unittest.TestCase):
-    def apply_to(self, p: tp.Plan, fresh: tp.Issue, fail=None) -> list:
+    def apply_to(self, p: tp.Plan, fresh: tp.Issue, fail=None, after=None, assignees=(),
+                 active=()) -> list:
+        """Apply ``p``; the issue reads as ``fresh``, and as ``after`` on any later read."""
         calls = []
-        def fake_gh(*a, **k):
-            calls.append(a)
-            if fail and fail(a):
-                raise subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 502")
-            return ""
-        with mock.patch.object(tp, "fetch_issue", return_value=fresh), \
-                mock.patch.object(tp, "gh", side_effect=fake_gh), mock.patch("sys.stderr"):
+        reads = iter([fresh] + [after or fresh] * 5)
+        with mock.patch.object(tp, "fetch_issue", side_effect=lambda r, n: next(reads)), \
+                mock.patch.object(tp, "gh", side_effect=gh_stub(calls, fail, assignees, active)), \
+                mock.patch("sys.stderr"):
             try:
                 tp.apply_plan("o/r", p)
             except subprocess.CalledProcessError:
                 calls.append(("raised",))
-        return calls
+        return writes(calls)
 
     def test_drops_a_plan_for_text_that_changed(self) -> None:
         # #58: the author edited while the model ran; the queued edit run classifies it.
@@ -838,7 +899,9 @@ class ApplyRechecks(unittest.TestCase):
     def test_a_failed_comment_takes_the_labels_off_again(self) -> None:
         # #59: otherwise the priority stays with no comment and a rerun skips the issue.
         p = plan(i=issue(labels={"needs-triage", "bug"}))
-        calls = self.apply_to(p, issue(labels={"needs-triage", "bug"}),
+        labelled = issue(labels={"bug", "area:correlator", "sev:critical", "reach:edge",
+                                 "priority:P1"})
+        calls = self.apply_to(p, issue(labels={"needs-triage", "bug"}), after=labelled,
                               fail=lambda a: a[:2] == ("issue", "comment"))
         self.assertEqual(calls[-1], ("raised",))
         added = [a for a in calls if "--add-label" in a]
@@ -851,7 +914,10 @@ class ApplyRechecks(unittest.TestCase):
     def test_labels_it_did_not_add_are_not_removed_on_undo(self) -> None:
         p = plan()
         fresh = issue(labels={"area:correlator"})
-        calls = self.apply_to(p, fresh, fail=lambda a: a[:2] == ("issue", "comment"))
+        labelled = issue(labels={"bug", "area:correlator", "sev:critical", "reach:edge",
+                                 "priority:P1"})
+        calls = self.apply_to(p, fresh, after=labelled,
+                              fail=lambda a: a[:2] == ("issue", "comment"))
         undo = [a for a in calls if "--remove-label" in a][-1]
         self.assertNotIn("area:correlator", undo[-1].split(","))
 
@@ -863,6 +929,38 @@ class ApplyRechecks(unittest.TestCase):
         self.assertTrue(any(a[:2] == ("issue", "comment") for a in calls))
         self.assertFalse(any("--add-assignee" in a for a in calls))
         self.assertTrue(any("--add-assignee" in a for a in self.apply_to(p, issue())))
+
+    def test_reads_the_assignees_again_just_before_assigning(self) -> None:
+        # Codex review: someone assigned while the labels and comment went on.
+        calls = self.apply_to(plan(), issue(), assignees=["maintainer"])
+        self.assertTrue(any(a[:2] == ("issue", "comment") for a in calls))
+        self.assertFalse(any("--add-assignee" in a for a in calls))
+
+    def test_a_lost_response_with_the_comment_posted_completes_the_labels(self) -> None:
+        # The comment call failed but reached GitHub: keep the labels it explains.
+        p = plan(i=issue(labels={"needs-triage", "bug"}))
+        posted = issue(labels={"needs-triage", "bug"}, triage_count=1)
+        calls = self.apply_to(p, issue(labels={"needs-triage", "bug"}), after=posted,
+                              fail=lambda a: a[:2] == ("issue", "comment"))
+        self.assertEqual(calls[-1], ("raised",))
+        added = [a for a in calls if "--add-label" in a]
+        self.assertEqual(added[-1][-1], "area:correlator,sev:critical,reach:edge,priority:P1")
+        self.assertEqual(calls[-2][-1], "needs-triage")
+        self.assertIn("--remove-label", calls[-2])
+
+    def test_undo_only_removes_labels_that_are_there(self) -> None:
+        # The add-label call failed without reaching GitHub: nothing to take off.
+        calls = self.apply_to(plan(), issue(), fail=lambda a: "--add-label" in a)
+        self.assertFalse(any("--remove-label" in a for a in calls))
+
+    def test_a_backfill_plan_gives_way_to_another_run(self) -> None:
+        # Codex review (#70): a manual run for one issue does not change the issue.
+        p = plan()
+        p.backfill = True
+        self.assertEqual(self.apply_to(p, issue(), active=[7]), [])
+        self.assertTrue(self.apply_to(p, issue(), active=[8]))
+        # An event run applies regardless; the back-fill is the one that gives way.
+        self.assertTrue(self.apply_to(plan(), issue(), active=[7]))
 
     def test_assignee_comes_after_the_comment(self) -> None:
         calls = self.apply_to(plan(), issue())
@@ -890,7 +988,7 @@ class ApplyRechecks(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d, \
                 mock.patch.object(tp, "fetch_issue", side_effect=fetch), \
                 mock.patch.object(tp, "ensure_labels"), mock.patch("sys.stderr"), \
-                mock.patch.object(tp, "gh", side_effect=lambda *a, **k: written.append(a) or ""):
+                mock.patch.object(tp, "gh", side_effect=gh_stub(written)):
             path = Path(d) / "plan.json"
             tp.write_plans(path, plans)
             self.assertEqual(tp.main(["--repo", "o/r", "apply", "--plan", str(path)]), 1)
@@ -969,10 +1067,15 @@ class StatedReviewPriority(unittest.TestCase):
 
     BODY = "Deferred finding.\n\nReview priority: P1. Per ADR-0003 the issue keeps it."
 
-    def test_a_maintainers_line_is_kept_over_the_table(self) -> None:
+    def test_a_maintainers_line_raises_the_table(self) -> None:
         p = plan(i=issue(body=self.BODY), severity="minor", reach="edge")
         self.assertIn("priority:P1", p.add_labels)
-        self.assertIn("kept the deferred review's P1 (the issue states it)", p.comment)
+        self.assertIn("the deferred review's priority the issue states (at least P1)", p.comment)
+
+    def test_a_maintainers_line_never_lowers_the_table(self) -> None:
+        # Codex review: the line is a floor (#65), so a critical/common issue stays P0.
+        p = plan(i=issue(body="Review priority: P2"), severity="critical", reach="common")
+        self.assertIn("priority:P0", p.add_labels)
 
     def test_the_line_wins_over_the_models_reading(self) -> None:
         p = plan(i=issue(body=self.BODY), severity="minor", reach="edge", review_priority="P3")

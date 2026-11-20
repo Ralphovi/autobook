@@ -140,7 +140,7 @@ def verdict_schema(areas: list[str]) -> dict:
             "severity": {"type": "string", "enum": list(SEVERITIES)},
             "reach": {"type": "string", "enum": list(REACHES)},
             # Structured output accepts minItems 0 or 1 only, not maxItems; validate()
-            # keeps the first two.
+            # rejects a third area.
             "areas": {"type": "array", "items": {"type": "string", "enum": areas},
                       "minItems": 1, "description": "One area, or two when it clearly spans both."},
             "flags": {
@@ -188,8 +188,10 @@ def validate(verdict: dict, areas: list[str]) -> dict:
         chosen = [a for a in verdict["areas"] if a in areas]
         if len(chosen) != len(verdict["areas"]):
             raise InvalidVerdict(f"areas {verdict['areas']!r}")
-        if not chosen:
-            raise InvalidVerdict("no area")
+        # One or two (#60). The schema can only say "at least one"; the upper bound is
+        # checked here, and a third area is an answer that did not follow the rules.
+        if not 1 <= len(set(chosen)) <= 2:
+            raise InvalidVerdict(f"{len(set(chosen))} areas")
         flags = {f: verdict["flags"][f] is True for f in FLAGS}
         # A vulnerability report is a security issue, so it gets the security floor even
         # when the model left that flag off (ADR-0003 section 5).
@@ -200,7 +202,7 @@ def validate(verdict: dict, areas: list[str]) -> dict:
             "type": verdict["type"],
             "severity": verdict["severity"],
             "reach": verdict["reach"],
-            "areas": list(dict.fromkeys(chosen))[:2],
+            "areas": list(dict.fromkeys(chosen)),
             "flags": flags,
             "review_priority": verdict["review_priority"],
             "unsure": verdict["unsure"] is True,
@@ -215,11 +217,14 @@ def validate(verdict: dict, areas: list[str]) -> dict:
 
 
 def compute_priority(severity: str, reach: str, flags: dict[str, bool], review_priority: str,
-                     existing_labels: set[str]) -> tuple[int, int, list[str]]:
+                     existing_labels: set[str],
+                     stated_review: str | None = None) -> tuple[int, int, list[str]]:
     """ADR-0003 sections 2 and 3. Returns (priority, table_priority, notes).
 
     Order where the rules disagree: the table, then a deferred review finding keeps the
-    review's priority, then the floors, so a floor can still raise a review's priority."""
+    review's priority, then the floors, so a floor can still raise a review's priority.
+    A review priority the issue states in its own line (``stated_review``) is a floor
+    too: it raises the priority, and never lowers one the table or a flag set (#65)."""
     base = TABLE[severity][reach]
     prio, notes = base, []
     if review_priority != "none":
@@ -229,6 +234,8 @@ def compute_priority(severity: str, reach: str, flags: dict[str, bool], review_p
         prio = kept
     floors = [FLOORS[k] for k, on in flags.items() if on and k in FLOORS]
     floors += [LABEL_FLOORS[name] for name in sorted(existing_labels) if name in LABEL_FLOORS]
+    if stated_review:
+        floors.append((int(stated_review[1]), "the deferred review's priority the issue states"))
     for floor, label in sorted(set(floors)):
         if floor < prio:
             prio = floor
@@ -253,15 +260,13 @@ def stated_review_priority(issue: "Issue") -> str | None:
     return found.pop() if len(found) == 1 else None
 
 
-def review_priority_for(issue: "Issue", verdict: dict) -> tuple[str, str | None]:
-    """The review priority to keep, and a note on where it came from. The issue's own
-    line wins over the model's reading; the model's is used only for a maintainer's issue,
-    for the same reason the line is."""
+def review_priorities(issue: "Issue", verdict: dict) -> tuple[str, str | None]:
+    """(the review priority to keep, the stated review priority to use as a floor). The
+    issue's own line replaces the model's reading; the model's is used only for a
+    maintainer's issue, for the same reason the line is."""
     stated = stated_review_priority(issue)
-    if stated:
-        return stated, "the issue states it"
-    if issue.author_association not in TRUSTED_AUTHORS:
-        return "none", None
+    if stated or issue.author_association not in TRUSTED_AUTHORS:
+        return "none", stated
     return verdict["review_priority"], None
 
 
@@ -468,12 +473,10 @@ def build_plan(issue: Issue, verdict: dict, config: dict, *, model: str, usage: 
                    else scrub(verdict["missing"], issue_text))
         rows.append(_row("needs-triage", f"Severity or reach could not be placed. Missing: {missing}"))
     else:
-        review, source = review_priority_for(issue, verdict)
+        review, stated = review_priorities(issue, verdict)
         prio, base, notes = compute_priority(verdict["severity"], verdict["reach"],
-                                             verdict["flags"], review, issue.labels)
-        if source:
-            notes = [f"{n} ({source})" if n.startswith("kept the deferred review") else n
-                     for n in notes]
+                                             verdict["flags"], review, issue.labels,
+                                             stated_review=stated)
         if "needs-triage" in issue.labels:
             plan.remove_labels.append("needs-triage")
         plan.add_labels += [f"sev:{verdict['severity']}", f"reach:{verdict['reach']}",
@@ -577,19 +580,24 @@ _SECRETS = re.compile("|".join([
     r"\bAIza[0-9A-Za-z_-]{35}",                                # Google API key
     r"\bxox[abposr]-[A-Za-z0-9-]{10,}",                        # Slack
     r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",  # JWT
-    # A value assigned to a secret-named key: at least 8 characters with a letter and a
+    # A value assigned to a secret-named key, also with a prefix (PAPERLESS_TOKEN,
+    # client_secret, AWS_SECRET_ACCESS_KEY): at least 8 characters with a letter and a
     # digit, so `token: <your token>`, `password = os.environ[...]` and prose do not count.
-    r"\b(?i:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|auth)"
+    # The prefix is bounded so a long identifier cannot make the search quadratic.
+    r"(?<![A-Za-z0-9])[A-Za-z0-9_.-]{0,40}"
+    r"(?i:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|auth)"
     r"[\"']?\s*[:=]\s*[\"']?(?=[^\s\"']*\d)(?=[^\s\"']*[A-Za-z])[A-Za-z0-9_\-+/=!#%^&*~]{8,}",
 ]), re.ASCII)
 
-# A GnuCash account path under a standard top-level account, German or English
-# ("Ausgaben:Arzt", "Expenses:Medical:Dentist"). An account name can be Art. 9 data on its
-# own (AGENTS.md: "a name like Kirchensteuer"). Imbalance-EUR and Orphan-EUR have no path.
+# A GnuCash account path under a standard top-level account, German or English, in any
+# case ("Ausgaben:Arzt", "expenses:Medical:Dentist"). An account name can be Art. 9 data on
+# its own (AGENTS.md: "a name like Kirchensteuer"). Imbalance-EUR and Orphan-EUR have no
+# path. A path under a top-level account the user named themselves is not recognised; that
+# residual risk is recorded in ADR-0003.
 _ACCOUNT_PATH = re.compile(
-    r"\b(?:Ausgaben|Einnahmen|Aufwand|Aufwendungen|Erträge|Ertraege|Aktiva|Passiva|"
-    r"Verbindlichkeiten|Eigenkapital|Vermögen|Expenses|Expense|Income|Assets|Liabilities|"
-    r"Equity):[^\s:,;()\[\]`'\"]{2,}")
+    r"\b(?i:Ausgaben|Einnahmen|Aufwand|Aufwendungen|Erträge|Ertraege|Aktiva|Passiva|"
+    r"Verbindlichkeiten|Eigenkapital|Vermögen|Vermoegen|Expenses|Expense|Income|Assets|"
+    r"Liabilities|Equity):[^\s:,;()\[\]`'\"]{2,}")
 
 
 def hold_back_reason(text: str) -> str | None:
@@ -906,6 +914,30 @@ def open_untriaged(repo: str, limit: int) -> list[int]:
     return numbers
 
 
+# The workflow names each run after its issue (`run-name:` in triage-priority.yml), so a
+# back-fill can see which issues another run is triaging right now (#70).
+WORKFLOW_FILE = "triage-priority.yml"
+_RUN_ISSUE = re.compile(r"\bissue #(\d+)$")
+ACTIVE_STATUSES = ("requested", "queued", "pending", "waiting", "in_progress")
+
+
+def active_issue_runs(repo: str) -> set[int]:
+    """Issues that a triage run other than this one is queued for or running on. A
+    back-fill gives way to them: GitHub keeps one pending run per concurrency group, so
+    the back-fill cannot simply share the issue runs' groups."""
+    me = os.environ.get("GITHUB_RUN_ID", "")
+    numbers = set()
+    for status in ACTIVE_STATUSES:
+        data = json.loads(gh("api", f"repos/{repo}/actions/workflows/{WORKFLOW_FILE}/runs"
+                                    f"?status={status}&per_page=100"))
+        for run in data.get("workflow_runs") or []:
+            if str(run.get("id")) == me:
+                continue
+            if (m := _RUN_ISSUE.search(run.get("display_title") or "")):
+                numbers.add(int(m.group(1)))
+    return numbers
+
+
 def ensure_labels(repo: str, config: dict) -> None:
     existing = {l["name"] for l in json.loads(gh("label", "list", "-R", repo, "--limit", "500",
                                                  "--json", "name"))}
@@ -943,51 +975,74 @@ def _apply_skip(plan: Plan, fresh: Issue) -> str | None:
 
 def apply_plan(repo: str, plan: Plan) -> bool:
     """Write the plan to the issue. Returns False when it was skipped. The labels and
-    the comment go on together: when a write fails, the labels this run set are taken
-    off again, so a rerun triages the issue instead of skipping it for a priority that has
-    no comment explaining it (#59)."""
+    the comment go on together: when a write fails, the issue is read again and set
+    straight, so a rerun triages it instead of skipping it for a priority that has no
+    comment explaining it (#59)."""
     # Re-read the issue: a human may have set a priority or an assignee since the classify
     # job read it, the text may have changed, or another run may have triaged it.
     fresh = fetch_issue(repo, plan.number)
     if (why := _apply_skip(plan, fresh)):
         print(f"#{plan.number}: skipped at apply time ({why})")
         return False
+    if plan.backfill and plan.number in active_issue_runs(repo):
+        print(f"#{plan.number}: skipped at apply time (another triage run is on it)")
+        return False
     number = str(plan.number)
     added = [l for l in plan.add_labels if l not in fresh.labels]
     removed = [l for l in plan.remove_labels if l in fresh.labels]
-    done_add = done_remove = False
     try:
         if added:
             gh("issue", "edit", number, "-R", repo, "--add-label", ",".join(added))
-            done_add = True
         if removed:
             gh("issue", "edit", number, "-R", repo, "--remove-label", ",".join(removed))
-            done_remove = True
         gh("issue", "comment", number, "-R", repo, "--body-file", "-", input=plan.comment)
     except subprocess.CalledProcessError:
-        _undo_labels(repo, number, added if done_add else [], removed if done_remove else [])
+        _recover(repo, plan, fresh, added, removed)
         raise
     # Last, and only when nobody is assigned now: a maintainer may have assigned someone
-    # while the model ran (#67, ADR-0003 section 4). A failure here loses nothing else.
-    if plan.assignee and not fresh.assignees:
+    # while the model ran or while the labels went on (#67, ADR-0003 section 4). Read
+    # just before writing; a failure here loses nothing else.
+    if plan.assignee:
         try:
-            gh("issue", "edit", number, "-R", repo, "--add-assignee", plan.assignee)
+            if not fresh.assignees and not current_assignees(repo, plan.number):
+                gh("issue", "edit", number, "-R", repo, "--add-assignee", plan.assignee)
         except subprocess.CalledProcessError as e:
             print(f"#{plan.number}: could not assign {plan.assignee}: {e.stderr.strip()}",
                   file=sys.stderr)
     return True
 
 
-def _undo_labels(repo: str, number: str, added: list[str], removed: list[str]) -> None:
+def current_assignees(repo: str, number: int) -> list[str]:
+    data = json.loads(gh("api", f"repos/{repo}/issues/{number}"))
+    return [a["login"] for a in data.get("assignees") or []]
+
+
+def _recover(repo: str, plan: Plan, before: Issue, added: list[str], removed: list[str]) -> None:
+    """After a failed write, make labels and comment agree again. A failed call may still
+    have reached GitHub (a lost response), so the issue is read again rather than trusting
+    which calls returned: if the comment is there, the labels it explains are completed;
+    if not, the labels this run added are taken off and needs-triage put back."""
+    number = str(plan.number)
     try:
-        if added:
-            gh("issue", "edit", number, "-R", repo, "--remove-label", ",".join(added))
-        if removed:
-            gh("issue", "edit", number, "-R", repo, "--add-label", ",".join(removed))
+        now = fetch_issue(repo, plan.number)
+        if now.triage_count > before.triage_count:
+            missing = [l for l in added if l not in now.labels]
+            extra = [l for l in removed if l in now.labels]
+            if missing:
+                gh("issue", "edit", number, "-R", repo, "--add-label", ",".join(missing))
+            if extra:
+                gh("issue", "edit", number, "-R", repo, "--remove-label", ",".join(extra))
+            return
+        on = [l for l in added if l in now.labels]
+        off = [l for l in removed if l not in now.labels]
+        if on:
+            gh("issue", "edit", number, "-R", repo, "--remove-label", ",".join(on))
+        if off:
+            gh("issue", "edit", number, "-R", repo, "--add-label", ",".join(off))
     except subprocess.CalledProcessError:
-        print(f"::error::#{number}: the triage comment failed and the labels it explains "
-              f"could not be taken off again ({', '.join(added)}); remove them by hand so "
-              "the issue is triaged again", file=sys.stderr)
+        print(f"::error::#{number}: a triage write failed and the issue could not be set "
+              f"straight; check that its labels ({', '.join(added)}) match its triage comment",
+              file=sys.stderr)
 
 
 # --- commands -----------------------------------------------------------------------------
@@ -1018,6 +1073,7 @@ def run_classify(args) -> int:
     client = claude_client(max_retries=3, timeout=120)
 
     numbers = open_untriaged(args.repo, args.limit) if args.all else [args.issue]
+    busy = active_issue_runs(args.repo) if args.all and numbers else set()
     if not numbers:
         print("no open issues without a priority")
     plans, failed = [], 0
@@ -1027,9 +1083,9 @@ def run_classify(args) -> int:
             if (why := skip_reason(issue, retry=args.retry)):
                 print(f"#{number}: skipped ({why})")
                 continue
-            if args.all and recently_updated(issue):
-                # It changed after the scan; its own event run may be triaging it (#70).
-                print(f"#{number}: skipped (changed in the last few minutes)")
+            if args.all and (recently_updated(issue) or number in busy):
+                # It changed after the scan, or another run is on it; that run triages it (#70).
+                print(f"#{number}: skipped (changed recently or another triage run is on it)")
                 continue
             if (held := hold_back_reason(f"{issue.title}\n{issue.body or ''}")):
                 plan = _stamp(held_back_plan(issue, held), issue, args)
