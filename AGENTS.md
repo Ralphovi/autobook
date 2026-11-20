@@ -10,6 +10,14 @@ is worse than a loud failure, and worse than no booking at all — it misreports
 for years and may reach a tax filing. Every rule below that looks pedantic is
 there because the failure it prevents is invisible.
 
+**The design is [proposal 0005](docs/design/proposals/draft/0005-beancount-ledger.md):**
+Autobook is handed OFX statements and books them into a Beancount v3 plain-text
+ledger. It replaces the earlier GnuCash design. The proposal is a draft, and
+parts of the tree still date from the GnuCash design: the stubs under
+`src/autobook/book/`, the tests under `tests/book/`, the test environment's
+`book` image, the `applier` nox session, and the linter's ban on `gnucash`. Do
+not extend those. New ledger code follows the rules below.
+
 ## Worktree discipline
 
 - Do implementation work in a dedicated Git worktree, not in the user's active
@@ -47,17 +55,23 @@ there because the failure it prevents is invisible.
   single-sourced gate: formatting, lint, types, tests, spelling, and the docs
   lint. It is the same command CI runs and the same command the PDCA (Plan-Do-Check-Act) harness
   delegates to; never re-declare gates elsewhere.
-- **Book-process tests (`nox -s applier`) and live-paperless tests (`nox -s live`)**
-  — run inside the throwaway **test environment** (`testenv/`, Docker): GnuCash
-  5.14 bindings, PostgreSQL and paperless-ngx 3.3.0 on an internal network with
-  no outbound access. They are not part of `gate`; CI runs them in the
-  `testenv` workflow. The session and the pytest marker keep the name `applier`,
-  but they cover every book-process test, the exporter's included.
-- **Unattended book-process runs only touch synthetic books (MUST).** CI and the
-  PDCA driver may run book-process and paperless tests **only** in the test
-  environment, against books the tests build and the documents `testenv/seed/`
-  creates. A real book, or a restored copy of one, is opened only by a human,
-  attended — and never mounted into the test environment.
+- **Ledger tests are part of `gate`.** Reader and writer tests run against
+  synthetic ledgers the tests build in temporary directories, on every
+  supported Python version. They need no Docker image.
+- **Live-paperless tests (`nox -s live`)** run inside the throwaway **test
+  environment** (`testenv/`, Docker): paperless-ngx 3.3.0 on an internal
+  network with no outbound access. They are not part of `gate`; CI runs them in
+  the `testenv` workflow.
+- **GnuCash-era tests (`nox -s applier`)** run in the same environment, against
+  its GnuCash 5.14 image. They remain only for the one-off conversion of a
+  GnuCash book (proposal 0005 §14) and are removed with it. Nothing new belongs
+  there except the conversion's export half.
+- **Unattended runs only touch synthetic ledgers (MUST).** CI and the PDCA
+  driver run ledger, conversion and paperless tests only against ledgers and
+  books the tests build and the documents `testenv/seed/` creates. A real
+  ledger or a real GnuCash book, or a copy of one, is opened only by a human,
+  attended — and never mounted into the test environment. A test fixture never
+  contains a real transaction.
 
 If a tool the gate needs is not installed, the session warns and skips. Never
 report a skipped step as having run.
@@ -70,128 +84,146 @@ a plan or brief that adds one says how it reaches each (#53).
 
 | Where | Runs | Gets `[project].dependencies` from |
 |---|---|---|
-| `nox -s gate` (CI job `gate`) | lint, types, the pipeline tests | `pip install -e .` in nox's venv |
-| CI `test-matrix` (Python 3.11–3.14) | the pipeline tests | `pip install -e .` in nox's venv, per interpreter |
-| the test environment (`testenv/`, CI workflow `testenv`) | book-process and paperless tests | the `book` image's venv, built from the tree's `pyproject.toml` (`testenv/book/Dockerfile`) |
+| `nox -s gate` (CI job `gate`) | lint, types, the pipeline and ledger tests | `pip install -e .` in nox's venv |
+| CI `test-matrix` (Python 3.11–3.14) | the pipeline and ledger tests | `pip install -e .` in nox's venv, per interpreter |
+| the test environment (`testenv/`, CI workflow `testenv`) | paperless and GnuCash-era tests | the `book` image's venv, built from the tree's `pyproject.toml` (`testenv/book/Dockerfile`) |
 | the PDCA instance (Ralphovi/autobook-pdca) | the bundle's tests, on the host | the instance `.venv`, synced from the worktree's `pyproject.toml` before each check |
 
 pytest imports **every** test module before it filters by marker. So a test module that
-imports a new dependency breaks the test environment's run even when it holds no book-process
-test — the image must have the dependency too. Only `[project].dependencies` reach the image,
-never the `dev` extra: test modules must not import a dev-only tool. `python3-gnucash` is a
-system package and stays out of `pyproject.toml` (the boundary below).
+imports a new dependency breaks the test environment's run even when it holds no test that
+runs there — the image must have the dependency too. Only `[project].dependencies` reach the image,
+never the `dev` extra: test modules must not import a dev-only tool. `beancount` is an
+ordinary dependency and reaches all four. `python3-gnucash` is a system package, is needed
+only by the conversion's export half, and stays out of `pyproject.toml`.
 
-## The pipeline/book-process boundary is load-bearing
+## The ledger-package boundary is load-bearing
 
-The **book process** is the only process that links libgnucash. It has two
-parts: the **exporter**, which only reads (`SESSION_READ_ONLY`; corpus, chart of
-accounts, existing transactions and scheduled-transaction definitions) and
-exists from build step 2, and the **applier**, which writes and exists from
-build step 5. Everything else is the **pipeline**.
+Autobook is one process. Inside it, the **ledger package** is the only code
+that imports `beancount`. It has two parts: the **reader**, which loads the
+ledger and never writes (chart of accounts, history, existing entries, file
+hashes, load errors), and the **writer**, which appends approved rows to the
+owned file, reads back, asserts, and undoes. Everything else — statement input,
+the pipeline, staging — reaches the ledger through the contracts.
 
-The split is not a style preference. It is what makes the pipeline testable
-with no GnuCash installed, sidesteps the `dist-packages` venv problem, and keeps
-a future Windows port a component swap rather than a redesign.
+The split is not a style preference. It is what keeps input, pipeline and
+staging testable against fixtures with no ledger on disk, and it keeps every
+rule about writing in one place.
 
-- **Nothing under the pipeline may import `gnucash`.** Not in a function body,
-  not behind a `try`, not lazily. If you find yourself wanting to, the design is
-  wrong — move the work across the JSON boundary. The ban is lifted only for the
-  book process: for the exporter's modules from step 2, for the applier's from
-  step 5, each through an explicit per-file exception.
-- The contract between them is JSON. Widen it deliberately and document it;
-  don't smuggle behaviour across by convention.
+- **Only the ledger package imports `beancount`.** Not in a function body, not
+  behind a `try`, not lazily. If you find yourself wanting to elsewhere, the
+  design is wrong — move the work behind a contract.
+- **Nothing imports `ofxstatement`.** Autobook is handed OFX files; it does not
+  run the converter. This is also a licence rule (see *Dependencies and
+  licence*).
+- **Nothing imports `gnucash`**, except the export half of the one-off
+  conversion tool.
+- **Nothing outside the ledger package parses ledger text.** Assertions,
+  idempotency checks and balance checks go through the reader.
+- The contracts (`corpus`, `coa`, `existing`, `apply-in`, `apply-out`) are typed
+  and serialise to JSON. Widen them deliberately and document it; don't smuggle
+  behaviour across by convention.
+- **Autobook is not the driver.** It starts no editor and no other program, and
+  it does not fetch statements. A driver, which is a separate project, calls
+  its commands and reads its exit codes and `--json` output.
 
-## Hard rules for anything touching a book (MUST)
+## Hard rules for anything touching a ledger (MUST)
 
-Every one of these has a silent-corruption failure mode. Violating one does not
-produce an error — it produces a wrong ledger.
+**The books must be correct at the end. An import with an error is rejected,
+not accepted.** Every rule here has a silent-corruption failure mode. Violating
+one does not produce an error — it produces a wrong ledger.
 
-- **Session mode.** `SESSION_NORMAL_OPEN` for writes, `SESSION_READ_ONLY` for
-  dry-run and inspection. **Never `SESSION_BREAK_LOCK`** — that is how a book
-  gets corrupted by writing under a live GUI session. Use `SessionOpenMode`, not
-  the deprecated `ignore_lock` / `is_new` / `force_new` booleans; pre-5.x
-  examples will show the old form. A locked book is reported as
-  `ERR_BACKEND_LOCKED` (the real enum in `qofbackend.h`; there is no
-  `QOF_BACKEND_LOCKED`): GnuCash is open, so write nothing. `SESSION_READ_ONLY`
-  ignores the lock — an export of an XML book while the GUI is open reads the
-  last *saved* state, not what is on screen.
-- **Save, then read back.** After the last `CommitEdit` of a batch, call
-  `session.save()`, then run the post-apply assertions, then `session.end()` in
-  the `finally`. On an XML book nothing persists until `save()` (all or nothing
-  per batch); on an SQL book each `CommitEdit` is already durable and `save()` is
-  a harmless no-op. `session.end()` does not save. A row is reported applied —
-  in `apply-out` and as `applied` in staging — only after a read-back confirms
-  it: for XML, reopen `SESSION_READ_ONLY` and find its ID; for SQL, an engine
-  query.
-- **Always release the session.** `session.end()` in a `finally`, unconditional.
-  A crashed book process that skips it leaves a stale lock.
-- **One session per run**, not per transaction. Session open loads the book.
-- **Money is exact.** Amounts are `GncNumeric` rationals built from **integer
-  cents**. Never floats, in any code path, including tests and fixtures. The
-  bindings hazard is the `GncNumeric(float)` constructor, which accepts a float
-  without complaint; the Python bindings expose no `from_double`, so do not go
-  looking for a safe one. Money in a rules file is `cents: 1250`, never
-  `value: 12.50`.
-- **The currency is read, never assumed.** Take the source account's commodity,
-  check that both accounts of the transaction share it and that its fraction is
-  100, and only then build `GncNumeric(cents, 100)`. No hard-coded `EUR`.
-- **Every mutation is bracketed** by `BeginEdit` / `CommitEdit`.
-- **Never set the reconciled flag from code.** Reconciliation is the independent
-  human check on everything this tool does. Removing that check to make a number
+- **Write only to the owned file, and only transactions.** The owned file is
+  the one file named in the configuration that the user's ledger includes.
+  Never write `open`, `close`, `balance`, `pad`, `price`, `commodity`, `plugin`
+  or `include`, and never edit any other file. The one exception is the owned
+  file's header, where `autobook init` copies the main file's five root-name
+  options, because an included file does not inherit them.
+- **Never create accounts.** That is: never write `open` or `close`. A chart of
+  accounts encodes how someone thinks about their money and may map to tax
+  categories an accountant specified. An account under the wrong root does not
+  error, it misreports forever.
+- **Never write `balance` or `pad`.** Balance assertions are the user's
+  independent check on everything this tool does. Writing one to make a number
   look right defeats the tool's only external audit.
-- **Never create accounts.** A chart of accounts encodes how someone thinks
-  about their money and may map to tax categories an accountant specified. An
-  auto-created account carries type, parent, placeholder flag, and commodity — an
-  expense account typed as an asset does not error, it misreports forever, and
-  removing an account with transactions is unpleasant. Point at GnuCash's New
-  Account Hierarchy assistant instead.
-- **Never create scheduled transactions programmatically.** A wrong frequency or
-  formula generates phantom transactions indefinitely; for loans it duplicates
-  the amortisation schedule and creates a second source of truth. Guide, verify,
-  don't create.
-- **Never `create` on a scheduled-transaction occurrence.** GnuCash creates
-  scheduled-transaction (SX) instances in its Since-Last-Run step when the GUI
-  starts — *after* the launcher has applied. So the exporter exports SX
-  definitions with `existing`, and a statement row in a source account whose
-  amount and date (within the match window) fall on an SX occurrence is never
-  `create`: it is `match_existing` if the instance exists, otherwise `queue`
-  with the reason "awaiting scheduled transaction".
+- **Never change an entry Autobook did not create.** Nothing is written to a
+  matched entry — no metadata, no link, no tag.
+- **Never regenerate the owned file.** The user and Fava may edit entries in
+  it. Append; on undo remove exact spans.
+- **A statement is admitted whole or not at all.** A statement that fails any
+  admission check (parse, a line without date, amount or currency, an unknown
+  account ID, a currency the ledger account does not declare, lines that do not
+  add up to the stated balances, an overlap the rule cannot resolve) is
+  rejected whole, its reason recorded, and no line of it is staged.
+- **A batch is booked whole or not at all.** A failed read-back or assertion
+  restores the previous content of the owned file and marks nothing applied.
+  There is no partial batch.
+- **Compare before replacing.** Nothing is written if any ledger file changed
+  since it was read. The replace is one atomic rename of a file written and
+  flushed in the same directory. There is no lock; this is the guard.
+- **Read back, then report.** After the replace, load the ledger again. A row
+  is reported applied — in `apply-out` and as `applied` in staging — only after
+  the read-back finds its proposal ID exactly once with the approved date,
+  accounts and amounts, and every assertion has passed.
+- **The assertions.** The load reports no error it did not report before the
+  write. No byte of the owned file before the appended entries changed, and no
+  other file changed. Each source account's balance moved by exactly the sum
+  applied. Where the statement states a closing balance, the ledger's balance
+  on that date equals it minus the statement's lines not yet applied.
+- **Money is exact.** Amounts are `Decimal` built from **integer cents** and
+  printed with exactly two decimals. Never floats, in any code path, including
+  tests and fixtures; the hazard is `Decimal(float)`, which accepts a float
+  without complaint. Money in a rules file is `cents: 1250`, never
+  `value: 12.50`.
+- **The currency is read, never assumed.** Take it from the statement, check
+  that the source account's `open` directive declares it and that the other
+  account's allows it. No hard-coded `EUR`.
+- **Every posting has an explicit amount, and postings sum to exactly zero.**
+  Never leave an amount for Beancount to fill in. Check the sum yourself:
+  Beancount infers a tolerance of half the last printed digit, so two-decimal
+  postings that are off by half a cent load without error. A computed split
+  specification that does not sum to the line's amount fails the row loudly.
+- **Accounts must be open on the row's date.** A row whose account is not open
+  then, or is closed, is queued. It is never written to produce a load error.
+- **The proposal ID.** `AB-` followed by a ULID, generated once per staged line
+  and stored in staging. It is not the staging key. Only a value matching
+  `^AB-[0-9A-HJKMNP-TV-Z]{26}$` in `autobook-id` metadata counts as Autobook's;
+  anything else belongs to the user.
+- **`autobook-id` only on entries Autobook creates.** A created entry carries
+  its proposal ID in `autobook-id`. On a `match_existing` row Autobook writes
+  nothing to the ledger; staging records the matched entry's content hash in
+  `applied_entry`.
 - **`match_existing` searches the row's source account**, not the target
-  account (an SX transaction may have many splits), and its candidates are
-  transactions not already claimed by Autobook. Do not filter on "unreconciled":
-  a user who reconciles promptly would never match.
-- **A transfer is booked once.** Every transfer row goes through a source-account
-  `match_existing` search *before* classification. The second side of a transfer
-  whose first side was booked in an earlier batch resolves to the transaction
-  the first side created. An unmatched second side whose counterpart is in
-  `transfers_pending` is queued as "pending transfer", never classified.
-- **Splits must sum exactly.** A computed split specification that does not sum
-  to the transaction total fails the row loudly. **Never dump the difference into
-  Imbalance.**
-- **Assertions go through the engine API, never SQL.** SQL assertions do not
-  exist for XML-backend users. This applies to the idempotency check, the
-  Imbalance assertion, balance checks, and lock inspection alike. Slower on large
-  books; works everywhere.
-- **The proposal ID.** `AB-` followed by a ULID, generated once per staged row and
-  stored in staging. It is not the staging key (`(source_account,
-  fitid_or_key)`). Only a value matching `^AB-[0-9A-HJKMNP-TV-Z]{26}$` counts as
-  an Autobook ID; anything else in `num` belongs to the user.
-- **`num` only on transactions Autobook creates.** A created transaction carries
-  its proposal ID in `num`. On a `match_existing` row Autobook **never writes
-  `num` and writes no FITID or `online_id` stamp**; staging records
-  `applied_tx_guid`, and the only thing that may be written to a matched
-  transaction is a document link, never overwriting one already there.
-- **Idempotency on re-run.** Before each batch, find created rows by their `num`
-  and matched rows by the GUID in staging, verified in the book; drop both. This
-  is what makes the applier safely re-runnable after any failure.
-- **Undo is narrow.** Undo deletes a transaction only if its GUID is in staging
-  with disposition `create` **and** its `num` equals that row's proposal ID —
-  assert both before deleting. Undo of a matched row removes only the document
-  link Autobook added.
-- **A refusal must never block opening GnuCash.** Notify loudly, then open the
-  app anyway. Proposals stay pending. Books are not hostage to a classifier that
-  lost confidence in itself. The launcher has no abort path before
-  `exec gnucash`: no `set -e` exit, each step `|| notify`.
+  account, and its candidates are entries not already claimed by Autobook
+  (carrying an `autobook-id`, or with their hash in staging). An ambiguous or
+  absent match is queued; never guess between candidates. Do not filter on
+  whether the user has asserted a balance since.
+- **A matched entry is identified by its content hash**, excluding metadata and
+  file position. Never by file and line: both move whenever anything above the
+  entry is edited.
+- **A transfer is booked once.** Every transfer row goes through a
+  source-account `match_existing` search *before* classification. The second
+  side of a transfer whose first side was booked in an earlier batch resolves
+  to the entry the first side created. An unmatched second side whose
+  counterpart is in `transfers_pending` is queued as "pending transfer", never
+  classified.
+- **Idempotency on re-run.** Before each batch, find created rows by their
+  `autobook-id` and matched rows by the hash in staging, verified in the
+  ledger; drop both. This is what makes `apply` safely re-runnable after any
+  failure.
+- **A missing entry is reported, never re-created silently.** A proposal ID
+  that staging holds as applied and the ledger no longer contains was removed
+  by someone. Report it.
+- **Undo is narrow.** Undo removes an entry only if its `autobook-id` is the
+  proposal ID of a staged row with disposition `create` or `create_split` in
+  that batch **and** the entry is in the owned file — assert both before
+  removing. It goes through the same compare, replace and read-back as apply.
+  Undo of a matched row changes staging only.
+- **A refusal writes nothing.** The batch gate, the version gate and an
+  unwritable ledger leave every ledger file byte-identical. Proposals stay
+  pending. Exit with the documented code and the reason; the driver notifies.
+- **Autobook does not second-guess a well-formed statement.** It cannot know
+  how an OFX file was produced. It checks the file for consistency and its own
+  work for correctness, and it never "repairs" a statement.
 
 ## Classification rules (MUST)
 
@@ -213,7 +245,7 @@ produce an error — it produces a wrong ledger.
   memo pattern, kNN or the LLM; only a creditor-ID rule or a qualifying
   document-keyed rule, both above the flag, may decide it.
 - **Splits are rules-tier only.** kNN and the LLM may only ever return a *single*
-  destination account. The corpus stays two-split-only, and a model guessing at
+  destination account. The corpus stays two-posting-only, and a model guessing at
   split ratios inside a ledger is precisely the confident wrongness the
   abstention design exists to prevent.
 - **Abstention is a feature, not a failure.** Both gates — nearest-neighbour
@@ -225,17 +257,19 @@ produce an error — it produces a wrong ledger.
 - **The LLM's label space is constrained.** Pass the account list, validate
   output against it, reject anything not in the live tree. Never put the account
   list in the steering document — generate it from the live chart of accounts
-  (CoA) at runtime or it drifts silently out of sync with the book. The check
-  also rejects placeholder accounts and Equity and Trading account types.
+  (CoA) at runtime or it drifts silently out of sync with the ledger. The check
+  also rejects accounts not open on the row's date, accounts whose `open`
+  directive does not allow the row's currency, and accounts under the Equity
+  root.
   Temperature is pinned to 0, and the model ID is part of the version tuple.
 - **LLM rows are never pre-marked.** An LLM-tier proposal is always `?` until
   shadow mode has measured per-method precision for `method=llm`; only then may
   a threshold pre-mark LLM rows.
 - **Provenance tagging is structural.** Every corpus row is `observed` or
-  `corrected`: the book export yields only `observed` rows, and `corrected` rows
+  `corrected`: the ledger reader yields only `observed` rows, and `corrected` rows
   come from staging. Synthetic rows must not be able to enter the index.
-- **Normalisation lives in the pipeline**, never in an ofxstatement plugin.
-  Plugins convert formats and preserve the raw memo. Normalisation is the thing
+- **Normalisation lives in the pipeline**, never in an ofxstatement plugin or
+  the driver. They convert formats and hand over the raw memo unmodified. Normalisation is the thing
   that gets tuned most; it must be changeable and re-backtestable in one place.
 - **The normaliser version is part of the gate tuple.** Changing it changes what
   every vector means.
@@ -271,40 +305,40 @@ produce an error — it produces a wrong ledger.
 
 ## Documents (MUST)
 
-Proposal 0002 reads statements and bills from paperless-ngx. A document is
-evidence, never the reference.
+Proposal 0002 reads bills from paperless-ngx. A document is evidence, never the
+reference. Statements are not read from paperless by Autobook: the driver
+hands over OFX files.
 
-- **Statement lines and amounts never come from extraction.** They come from the
-  original file, parsed by the plugin — never from OCR (optical character recognition) text, the archive
-  version, or any metadata field.
-- **Admission is all or nothing per statement.** A statement that fails any
-  admission step (checksum, parse, balance check, overlap rule) is rejected whole
-  and its reason recorded; no line of it is staged.
+- **Statement lines and amounts come from the OFX file only** — never from OCR
+  (optical character recognition) text, a document's archive version, or any
+  metadata field.
 - **A link changes nothing else.** A document link changes no amount, date or
-  account, and creates no split.
-- **Never overwrite an existing document link.** A human put it there.
+  account, and creates no posting.
+- **A link is written on created entries only**, as `autobook-doc` metadata.
+  On a matched entry nothing is written; the link is recorded in staging.
 - **The paperless stamp is never read back** to decide anything. "Already
-  linked" is known from staging.
+  linked" is known from staging. The stamp, where enabled, holds the proposal
+  ID.
 - **Document content and correspondent names never reach staging, logs or a
   model backend.** Only IDs, checksums, amounts and dates.
-- **Temporary files are private and short-lived.** Downloaded originals and the
-  review file live under `$XDG_RUNTIME_DIR` (the review file at
-  `$XDG_RUNTIME_DIR/autobook/review.txt`), mode `0600`, removed in a `finally`.
+- **Temporary files are private and short-lived.** Anything Autobook downloads
+  lives under `$XDG_RUNTIME_DIR/autobook/`, mode `0600`, removed in a
+  `finally`. `autobook review-file` writes to standard output; where the review
+  file lives is the driver's decision, and it holds counterparty names.
 
 ## Review interface rules (MUST)
 
 - **Approval is the saved review file.** The pipeline writes the review file
   with rows that passed the gates pre-marked `a` and every other row `?`.
   Saving the file is the user's approval of every row marked `a` in it. Nothing
-  reaches the book that was not marked `a` in the saved review file, with
-  exactly the account, amount and date shown there. Unattended runs with no
-  editor are deferred beyond v1.
+  reaches the ledger that was not marked `a` in the saved review file, with
+  exactly the account, amount and date shown there.
 - **Parse by ID, never by position.** Reordering, deleting, or sorting the review
   file must not misalign rows. An unknown ID is an error, not a guess.
 - **Strict parser, fail loudly.** Unknown status char, unparseable account, or
   amount mismatch aborts the whole batch with a line number and applies nothing.
   Validate accounts against the live CoA at parse time so a typo stops the run
-  instead of creating an Imbalance row.
+  instead of reaching the writer.
 
 ## Workflows
 
@@ -320,8 +354,10 @@ evidence, never the reference.
 
 ## Design documents — pick the right class, change it the right way
 
-`docs/design/README.md` is the map. The design is proposal 0001 as amended by
-proposal 0002, described in `docs/design/architecture/`.
+`docs/design/README.md` is the map. The design is proposal 0005, with
+proposals 0002 and 0004 applying as it lists, described in
+`docs/design/architecture/`. Proposals 0001 and 0003 describe the earlier
+GnuCash design and are replaced by 0005.
 
 - **ADR** (`docs/design/adr/`) — a settled decision plus its rationale.
 - **Proposal** (`docs/design/proposals/`) — an implementation plan or milestone
@@ -336,7 +372,8 @@ the index/README.
 
 **Docs currency** is a merge requirement, not a follow-up: a change that adds or
 alters a CLI flag, a config key, a JSON contract field, a staging-table column,
-or a disposition updates the living architecture doc in the same PR.
+a disposition, an exit code, or the format of a written entry updates the
+living architecture doc in the same PR.
 
 ## Review rubric & protocol
 
@@ -346,35 +383,44 @@ When a defect class recurs, it graduates to a gate and drops out of review scope
 
 ### Recurring defect classes (MUST check when the diff touches the surface)
 
-- *Money*: any float in a monetary path; a float reaching the `GncNumeric(float)`
-  constructor; a rules-file amount written as `value: 12.50` instead of integer
-  `cents:`; rounding that does not preserve the exact-sum property; a currency
-  assumed rather than read from the source account's commodity, or a commodity
-  whose fraction is not checked to be 100.
-- *Book writes*: a row written that was not marked `a` in the saved review file;
-  a mutation outside `BeginEdit`/`CommitEdit`; a batch ended without
-  `session.save()`; a row reported applied without a read-back; a session not
-  ended in `finally`; a write path that could run while the GUI holds the lock
-  (`ERR_BACKEND_LOCKED`); a launcher path that can exit before `exec gnucash`.
-- *Idempotency*: a path that can create a transaction twice after a crash between
-  "committed to book" and "marked applied"; `num` or a FITID/`online_id` stamp
-  written to a matched transaction; a `num` that does not match the proposal-ID
-  pattern treated as Autobook's; an undo that deletes without checking both the
-  staging GUID with disposition `create` and the `num`.
+- *Money*: any float in a monetary path; a float reaching `Decimal`; a
+  rules-file amount written as `value: 12.50` instead of integer `cents:`;
+  rounding that does not preserve the exact-sum property; a posting written
+  without an explicit amount; the sum left to Beancount's tolerant check; a
+  currency assumed rather than read from the statement and checked against the
+  accounts' `open` directives.
+- *Ledger writes*: a row written that was not marked `a` in the saved review
+  file; a write to any file but the owned file; any directive but a
+  transaction; a write to an entry Autobook did not create; the owned file
+  regenerated instead of appended to; a replace without the compare, or one
+  that is not a single atomic rename; a row reported applied without a
+  read-back and the assertions; a failed read-back or assertion that leaves
+  the batch in the ledger; a refusal that changes a ledger file.
+- *Admission*: a statement partly admitted; a line staged from a rejected
+  statement; a rejection without a recorded reason; a statement "repaired"
+  instead of rejected; the same file admitted twice.
+- *Idempotency*: a path that can create an entry twice after a crash between
+  "file replaced" and "marked applied"; an `autobook-id` written to a matched
+  entry; a value that does not match the proposal-ID pattern treated as
+  Autobook's; a missing entry silently re-created; an undo that removes
+  without checking both the staged `create` row and the owned file.
 - *Double-booking*: a transfer booked from both statements, or a second side
   classified instead of matched or queued as "pending transfer"; a PayPal row
   classified as an expense rather than matched to its funding transaction (in
-  `account` mode); a `create` on a scheduled-transaction occurrence; a
-  `match_existing` search on the target account, or filtered to unreconciled
-  transactions.
-- *Documents*: a statement line, amount or balance taken from OCR text, the
-  archive version or metadata; a statement partly admitted; a document link that
-  changes an amount, date or account, creates a split, or overwrites an existing
-  link; a decision read from the paperless stamp; document content or a
-  correspondent name in staging, a log or a model request; a downloaded original
-  or review file outside `$XDG_RUNTIME_DIR`, readable by others, or left behind
-  after a failure; a document-keyed rule acting without a confirmed
-  correspondent association.
+  `account` mode); a `match_existing` search on the target account, or one
+  that picks between several candidates; a matched entry identified by file
+  and line.
+- *Boundary*: `beancount` imported outside the ledger package; `ofxstatement`
+  or `gnucash` imported anywhere but the conversion's export half; ledger text
+  parsed outside the ledger package; Autobook starting an editor, the
+  converter or any other program.
+- *Documents*: a statement line or amount taken from anything but the OFX
+  file; a document link that changes an amount, date or account or creates a
+  posting; a link written to a matched entry; a decision read from the
+  paperless stamp; document content or a correspondent name in staging, a log
+  or a model request; a downloaded file outside `$XDG_RUNTIME_DIR`, readable by
+  others, or left behind after a failure; a document-keyed rule acting without
+  a confirmed correspondent association.
 - *Out-of-scope rows*: silently queued instead of dispositioned `out_of_scope`,
   or counted in coverage and drift metrics — either one degrades the drift
   detector until it stops catching real drift.
@@ -383,16 +429,15 @@ When a defect class recurs, it graduates to a gate and drops out of review scope
   index; an LLM row pre-marked before shadow mode has measured `method=llm`; an
   ambiguity-flagged row pre-marked by a tier below the flag; a rule `priority`
   that reorders tiers.
-- *Failure granularity*: a per-row problem that halts the batch, or a batch-level
-  problem (coverage drop, LLM-fallback spike, parse errors) that still writes; a
-  failed post-apply assertion that is not flagged and undoable.
-- *Backend assumptions*: SQL used where an XML book must work; a file-copy backup
-  assumed where the backend is a server; a `CommitEdit` assumed durable on an
-  XML book.
+- *Failure granularity*: a per-row problem that halts the batch; a
+  statement-level problem that stages some lines; a batch-level problem
+  (coverage drop, LLM-fallback spike) that still writes.
 - *Privacy*: a raw memo crossing the adapter boundary; a remote backend
   receiving a token outside the rule packs and allowlist, or an account name; a
   counterparty IBAN in shareable data; a credential in config; a transaction in
-  a test fixture drawn from a real statement.
+  a test fixture drawn from a real statement or a real ledger.
+- *Licence*: a new dependency under Apache-2.0, GPL-3.0 or another licence not
+  compatible with GPLv2.
 
 ### Reviewer protocol
 
@@ -409,13 +454,15 @@ When a defect class recurs, it graduates to a gate and drops out of review scope
   whose findings are each fixed or rejected with a recorded reason. Do not
   iterate review rounds chasing silence.
 
-## Working with GnuCash upstream
+## Dependencies and licence
 
-- Enhancement requests go to Bugzilla (Severity=Enhancement,
-  Version=git-future); new features target the `future` branch. A report with a
-  well-written patch is far more likely to land — there is boilerplate rejection
-  text for unpatched proposals.
-- Since Sept 2025 Bugzilla requires login even to *view* bugs and automatic
-  account creation is disabled. Mailing list archives remain indexed
-  (`site:lists.gnucash.org`).
-- Expect silence rather than rejection. Small, concrete, patch-attached.
+- Beancount is **GPL-2.0-only**. ADR-0005 relicenses Autobook as
+  GPL-2.0-or-later so that it can import it; the ADR is Proposed, and `LICENSE`
+  changes when it is accepted. Write new code as if it already were.
+- **A library Autobook imports must be compatible with GPLv2**: MIT, BSD, ISC,
+  LGPL, GPL-2.0-or-later. **Apache-2.0 is not, and neither is GPLv3.** That
+  rules out `requests`, vendor SDKs under Apache-2.0, and `ofxstatement`.
+- Tools that are run and not imported (nox, ruff, mypy, pytest) are unaffected.
+- Check the licence before proposing a dependency, and say what it is in the
+  pull request.
+

@@ -787,8 +787,7 @@ a cold-start aid, not a research programme.
 
 ### 16. Build order
 
-Architecture chapter 9 governs the order and is updated when this proposal is
-accepted. Step numbers of the earlier proposals are kept where a step
+Architecture chapter 9 governs the order and already follows this table. Step numbers of the earlier proposals are kept where a step
 survives, because issues refer to them.
 
 | Order | # | Milestone | Proves |
@@ -821,9 +820,8 @@ only by a human, attended. Test fixtures never contain a real transaction.
 
 ### 17. Rules for anyone writing code
 
-These replace the GnuCash-specific hard rules in `AGENTS.md` when the writer
-is built. The classification, privacy and review-file rules there are
-unchanged.
+These replace the GnuCash-specific hard rules; `AGENTS.md` states them in
+full. The classification, privacy and review-file rules there are unchanged.
 
 - **Only the ledger package imports `beancount`.** Nothing imports
   `ofxstatement` or `gnucash`.
@@ -978,7 +976,7 @@ What misreports silently if this is subtly wrong:
 - **Documents.** Proposals 0001–0004 are drafts, so none is frozen. ADR-0002
   is accepted and is superseded by ADR-0005. ADR-0001 and ADR-0003 mention
   GnuCash in examples only. `AGENTS.md`, the README and the architecture
-  chapters describe the GnuCash design until this proposal is accepted.
+  chapters already describe this design.
 - **The interim tool** (`autobook-2025`) books into the GnuCash book. It
   finishes, or stops, before the export that B1 converts.
 
