@@ -39,8 +39,8 @@ sequenceDiagram
         L->>L: 3 check each row (accounts open, currency, exact zero sum), a failing row is queued
         L->>L: 4 render the entries
         L->>F: 5 compare all hashes (a changed file is exit 4), then atomic replace of the owned file
-        L->>F: 6 read back, every proposal ID exactly once as approved
-        L->>L: 7 assert (no new load error, nothing else changed, balances moved by the sum applied)
+        L->>F: 6 read back, every created ID exactly once as approved, every matched entry still present
+        L->>L: 7 assert (no new load error, nothing else changed, balances moved by the postings written)
         alt read-back or an assertion fails
             L->>F: restore the previous content of the owned file
             L-->>A: nothing applied

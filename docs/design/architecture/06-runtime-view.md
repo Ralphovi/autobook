@@ -208,14 +208,19 @@ whole or not at all.
    (see *Recovery*), then write a temporary file in the same directory, flush
    it to disk, and rename it over the owned file. The journal keeps the
    previous content until step 7 has passed and staging is updated.
-6. **Read back.** Load the ledger again. Every proposal ID of the batch appears
-   exactly once, with the approved date, accounts and amounts.
+6. **Read back.** Load the ledger again.
+   - Every **created** row's proposal ID appears exactly once, with the
+     approved date, accounts and amounts.
+   - A **matched** row wrote nothing, so its ID is not looked for. Its recorded
+     entry must still be present, with a posting of the row's amount in the
+     row's source account.
 7. **Assert.**
    - The load reports no error that step 1 did not report.
    - No byte of the owned file before the appended entries changed, and no
      other file changed.
-   - For each source account with a statement in the batch, its balance moved
-     by exactly the sum applied.
+   - The balance of every account the batch wrote postings to moved by exactly
+     the sum of those postings, and no other account's balance moved. A matched
+     row writes no posting and moves nothing.
    - Where the statement states a closing balance: the ledger's balance on the
      closing date equals it, minus the statement's lines not yet applied
      (queued, out of scope, pending transfer).

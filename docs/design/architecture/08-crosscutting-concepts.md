@@ -73,8 +73,9 @@ links and postings, stable when the entry moves in its file. A re-run drops a
 matched row whose hash is in staging and still present in the ledger.
 
 A row counts as `applied` only after the **read-back** (the ledger is loaded
-again and every proposal ID of the batch appears exactly once, with the
-approved date, accounts and amounts) and every assertion have passed. That
+again; every created row's proposal ID appears exactly once, with the approved
+date, accounts and amounts, and every matched row's recorded entry is still
+present) and every assertion have passed. That
 holds after a crash too: the writer's batch journal, written before the
 replace, lets the next run validate an interrupted batch against its original
 baseline or restore the previous content (section 6.5). IDs found in the
@@ -106,7 +107,7 @@ Failures are classified by granularity and never mixed:
 | Statement | The file does not parse as OFX; a line lacks a date, an amount or a currency, or an amount is not a whole number of cents; the account ID is not in the configuration; the currency is not one the ledger account's `open` directive declares; the lines do not add up to the stated balances; an overlap the overlap rule cannot resolve | That statement is rejected at admission, the reason recorded, no line of it staged (exit 7); other statements proceed |
 | Row | Low confidence, no rule and kNN distance over the cutoff, proposed account not open on the line's date, a currency the account does not allow, ambiguous or absent `match_existing`, split sum mismatch, a payment whose parts change every period (a loan instalment), pending transfer | That row is queued with its reason; the batch proceeds |
 | Batch, before writing | Coverage drop, spike in large-language-model (LLM) fallbacks, unusual share of rarely used target accounts, version tuple changed (exit 3); owned file not included, root-name options differ from the main file's, a ledger file changed between read and replace (exit 4); review file does not parse (exit 5); paperless unreachable | Nothing is written; the reason is reported; the ledger is a text file and stays usable |
-| Batch, after writing | The read-back does not find every proposal ID exactly once as approved; the load reports a new error; a byte before the appended entries or another file changed; a source account's balance did not move by exactly the sum applied; the closing-balance check fails | The previous content of the owned file is restored, nothing is marked applied (exit 6) |
+| Batch, after writing | The read-back does not find every created row's proposal ID exactly once as approved, or a matched row's entry is gone; the load reports a new error; a byte before the appended entries or another file changed; an account's balance did not move by exactly the sum of the postings written to it; the closing-balance check fails | The previous content of the owned file is restored, nothing is marked applied (exit 6) |
 
 The second batch tier is what makes "whole or not at all" hold after the
 replace: the writer keeps the previous content until the assertions pass and

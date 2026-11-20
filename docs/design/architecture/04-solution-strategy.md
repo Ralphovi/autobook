@@ -23,7 +23,7 @@ tags:
 | | Idempotency through the proposal ID in the `autobook-id` metadata of each entry Autobook creates, and the staged content hash of each matched one: re-running any batch after any crash is safe. | sections 6.5, 8.2 |
 | | Compare, then replace: nothing is written if any ledger file changed since it was read, and the replacement is a single atomic rename. There is no lock to take and none to break. | section 6.5 |
 | | Read back after writing; a row counts as applied only after the read-back and every assertion have passed. On any failure the previous file is restored, so no batch is ever partly booked. | section 6.5 |
-| | Post-apply assertions through the reader: no new load error, no byte outside the appended entries changed, each source account moved by exactly the applied amounts, the statement closing balance agrees. | section 6.5 |
+| | Post-apply assertions through the reader: no new load error, no byte outside the appended entries changed, each account moved by exactly the postings written to it, the statement closing balance agrees. | section 6.5 |
 | | The chart of accounts and the balance assertions stay the user's; Autobook never writes `open` or `balance`. A row whose account is not open on its date, or does not allow its currency, is queued. | proposal 0005 §1, §8.1 |
 | | A transfer is booked once: correlation runs before classification, and the second side resolves to the entry the first side created. | section 5.2 |
 | | A statement is admitted whole or not at all: parsed, checked for consistency, and balance-checked where it states balances. | section 6.2, proposal 0005 §5 |

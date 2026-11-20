@@ -168,12 +168,16 @@ one does not produce an error — it produces a wrong ledger.
   overwrites the first. A run that cannot take the lock writes nothing.
 - **Read back, then report.** After the replace, load the ledger again. A row
   is reported applied — in `apply-out` and as `applied` in staging — only after
-  the read-back finds its proposal ID exactly once with the approved date,
-  accounts and amounts, and every assertion has passed.
+  the read-back and every assertion have passed. For a created row the
+  read-back finds its proposal ID exactly once with the approved date, accounts
+  and amounts. A matched row wrote nothing, so its ID is not looked for: its
+  recorded entry must still be present, with a posting of the row's amount in
+  the row's source account.
 - **The assertions.** The load reports no error it did not report before the
   write. No byte of the owned file before the appended entries changed, and no
-  other file changed. Each source account's balance moved by exactly the sum
-  applied. Where the statement states a closing balance, the ledger's balance
+  other file changed. The balance of every account the batch wrote postings to
+  moved by exactly the sum of those postings, and no other balance moved; a
+  matched row writes none and moves nothing. Where the statement states a closing balance, the ledger's balance
   on that date equals it minus the statement's lines not yet applied.
 - **Money is exact.** Amounts are `Decimal` built from **integer cents** and
   printed with exactly two decimals. Never floats, in any code path, including

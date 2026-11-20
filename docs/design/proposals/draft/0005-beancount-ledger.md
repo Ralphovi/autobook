@@ -565,17 +565,23 @@ updated after step 7 or 8.
    then write a temporary file in the same directory, flush it to disk, and
    rename it over the owned file. The journal keeps the previous content
    until step 7 has passed and staging is updated.
-6. **Read back.** Load the ledger again. Every proposal ID of the batch
-   appears exactly once, with the approved date, accounts and amounts.
+6. **Read back.** Load the ledger again.
+   - Every **created** row's proposal ID appears exactly once, with the
+     approved date, accounts and amounts.
+   - A **matched** row wrote nothing, so its ID is not looked for. Its
+     recorded entry must still be present, with a posting of the row's amount
+     in the row's source account.
 7. **Assert.**
    - The load reports no error that step 1 did not report.
    - No byte of the owned file before the appended entries changed, and no
      other file changed.
-   - For each source account with a statement in the batch, its balance moved
-     by exactly the sum applied.
+   - The balance of every account the batch wrote postings to moved by exactly
+     the sum of those postings, and no other account's balance moved. A
+     matched row writes no posting and moves nothing.
    - Where the statement states a closing balance: the ledger's balance on the
      closing date equals it, minus the statement's lines not yet applied
-     (queued, out of scope, pending transfer).
+     (queued, out of scope, pending transfer). A matched line counts as
+     applied: its posting is already in the ledger.
 8. **On any failure in 6 or 7,** restore the previous content — only if the
    file still holds exactly what step 5 wrote — exit 6, and mark nothing
    applied. A row is `applied` only after step 7 passes.
@@ -982,6 +988,9 @@ like any other group and mostly become creditor-ID rules.
    - a crash after the replace, then a foreign edit to the owned file: the
      next run touches nothing and reports the interrupted batch;
    - a change to any ledger file between read and replace stops the write;
+   - a batch holding one created row and one matched row applies: the matched
+     row's ID is not required in the ledger and its amount is not counted as
+     balance movement;
    - of two `apply` runs started together, one books and the other writes
      nothing;
    - the second side of a transfer matches the entry the first side created,
