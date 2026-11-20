@@ -74,8 +74,12 @@ matched row whose hash is in staging and still present in the ledger.
 
 A row counts as `applied` only after the **read-back** (the ledger is loaded
 again and every proposal ID of the batch appears exactly once, with the
-approved date, accounts and amounts) and every assertion have passed. Any batch
-can be re-run after any failure. A proposal ID that staging holds as applied
+approved date, accounts and amounts) and every assertion have passed. That
+holds after a crash too: the writer's batch journal, written before the
+replace, lets the next run validate an interrupted batch against its original
+baseline or restore the previous content (section 6.5). IDs found in the
+ledger prove presence, not validation. Any batch can be re-run after any
+failure. A proposal ID that staging holds as applied
 and the ledger no longer contains is reported by `autobook status`, never
 re-created silently; so is an Autobook entry that differs from what staging
 recorded.

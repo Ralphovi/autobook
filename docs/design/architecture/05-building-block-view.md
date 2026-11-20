@@ -760,9 +760,16 @@ undo it removes exact spans.
 
 **Idempotency.** Ledger and staging are two stores with no shared transaction.
 A crash between "file replaced" and "marked applied" leaves them disagreeing.
-The proposal ID in the ledger settles it: before each batch the reader finds
-created rows by ID and the filter step drops them, so `apply` can be re-run
-after any failure. `autobook status` lists Autobook entries that differ from
+Two things settle it. The proposal ID in the ledger: before each batch the
+reader finds created rows by ID and the filter step drops them, so nothing is
+created twice. And the **batch journal**, which the writer writes beside the
+staging store before the replace (proposal IDs, the owned file's hash before
+and after, the previous content, the first load's errors and balances) and
+removes after staging is updated. A run that finds a journal validates that
+batch first, against the journal's baseline: read-back and assertions pass and
+the rows are marked applied, or the previous content is restored. If the owned
+file matches neither hash, Autobook touches nothing and reports (exit 4). IDs
+found in the ledger prove presence, not validation (section 6.5). `autobook status` lists Autobook entries that differ from
 what staging recorded, and proposal IDs that staging holds as applied but the
 ledger no longer contains. Both are reports, never writes: a missing entry is
 not silently created again.

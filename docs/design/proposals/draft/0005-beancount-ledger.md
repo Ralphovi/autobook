@@ -561,9 +561,10 @@ updated after step 7 or 8.
 4. **Render** the entries; the new content is the current owned file plus the
    entries.
 5. **Compare, then replace.** Re-hash every file. If any differs from step 1,
-   stop: exit 4, nothing written. Otherwise write a temporary file in the same
-   directory, flush it to disk, and rename it over the owned file. Keep the
-   previous content until step 7.
+   stop: exit 4, nothing written. Otherwise write the batch journal (§10.4),
+   then write a temporary file in the same directory, flush it to disk, and
+   rename it over the owned file. The journal keeps the previous content
+   until step 7 has passed and staging is updated.
 6. **Read back.** Load the ledger again. Every proposal ID of the batch
    appears exactly once, with the approved date, accounts and amounts.
 7. **Assert.**
@@ -589,9 +590,34 @@ rolls a batch back.
 #### 10.4 Idempotency
 
 Two stores, ledger and staging, with no shared transaction. A crash between
-"file replaced" and "marked applied" leaves them disagreeing. The proposal ID
-in the ledger settles it: before each batch the reader finds created rows by
-ID and drops them, so `apply` can be re-run after any failure.
+"file replaced" and "marked applied" leaves them disagreeing. Two things settle
+it.
+
+**The proposal ID** in the ledger: before each batch the reader finds created
+rows by ID and drops them, so nothing is created twice.
+
+**The batch journal.** Finding a batch's IDs in the ledger proves the entries are present, not that
+the batch passed its checks. So the writer keeps a **batch journal** beside the
+staging store. It is written and flushed to disk before the rename in step 5,
+and holds: the batch and its proposal IDs, the SHA-256 of the owned file before
+and after the replace, the previous content, the errors the first load
+reported, and the source-account balances from the first load. It is removed
+only after staging is updated.
+
+Every `apply` and `undo` first looks for a journal, under the writer lock:
+
+- The owned file has the journal's *before* hash: the replace never happened.
+  The journal is discarded and the batch is applied from the start.
+- It has the *after* hash: the batch was written and never validated. Steps 6
+  and 7 run now, against the journal's baseline and not against the ledger as
+  it stands. If they pass, the rows are marked applied. If they fail, the
+  previous content is restored (exit 6).
+- It has neither: someone changed the file since. Autobook touches nothing,
+  marks nothing applied and exits with code 4; `autobook status` shows the
+  interrupted batch for the user to resolve.
+
+A row is therefore never `applied` without having passed the read-back and the
+assertions, also after a crash.
 
 Because the ID is in the ledger, an entry the user later corrected is still
 recognisably Autobook's. `autobook status` lists Autobook entries that differ
@@ -876,6 +902,10 @@ full. The classification, privacy and review-file rules there are unchanged.
   can match the entry the first side created.
 - **One Autobook writer at a time.** `apply` and `undo` hold the writer lock
   from the first read until staging is updated.
+- **An interrupted batch is validated before it counts.** The batch journal
+  is written before the replace. A later run that finds it runs the read-back
+  and the assertions against the journal's baseline, or restores the previous
+  content. IDs found in the ledger prove presence, not validation.
 - **Idempotency on re-run.** Created rows are found by ID before each batch.
   A proposal ID that staging holds as applied and the ledger lacks is
   reported, never re-created silently.
@@ -947,6 +977,10 @@ like any other group and mostly become creditor-ID rules.
      byte-identical;
    - a re-run after a crash at each point between rendering and "marked
      applied" creates nothing twice;
+   - a crash after the replace of a batch that introduces a load error: the
+     next run restores the previous content and marks nothing applied;
+   - a crash after the replace, then a foreign edit to the owned file: the
+     next run touches nothing and reports the interrupted batch;
    - a change to any ledger file between read and replace stops the write;
    - of two `apply` runs started together, one books and the other writes
      nothing;

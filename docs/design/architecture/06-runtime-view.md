@@ -204,9 +204,10 @@ whole or not at all.
    integer cents and printed with two decimals. The new content is the current
    owned file plus the entries.
 5. **Compare, then replace.** Hash every file again. If any differs from step
-   1, stop: exit code 4, nothing written. Otherwise write a temporary file in
-   the same directory, flush it to disk, and rename it over the owned file. The
-   previous content is kept until step 7 has passed.
+   1, stop: exit code 4, nothing written. Otherwise write the batch journal
+   (see *Recovery*), then write a temporary file in the same directory, flush
+   it to disk, and rename it over the owned file. The journal keeps the
+   previous content until step 7 has passed and staging is updated.
 6. **Read back.** Load the ledger again. Every proposal ID of the batch appears
    exactly once, with the approved date, accounts and amounts.
 7. **Assert.**
@@ -239,11 +240,32 @@ Two details of the checks:
 transaction. A crash before the rename in step 5 leaves the ledger untouched,
 and the whole batch is re-run. A crash between "file replaced" and "marked
 applied in staging" leaves the created entries in the owned file, each with its
-proposal ID in `autobook-id`; the next run finds them by ID and drops them at
-step 2. Matched rows are found by their staged content hash, verified in the
-ledger. Staging is reconciled from what the reader finds (the `existing`
-contract, section 5.1). So `apply` can be re-run after any failure and creates
-nothing twice.
+proposal ID in `autobook-id`; a later run finds them by ID and drops them at
+step 2, so nothing is created twice. Matched rows are found by their staged
+entry, verified in the ledger.
+
+Finding a batch's IDs in the ledger proves the entries are present, not that
+the batch passed its checks. So the writer keeps a **batch journal** beside the
+staging store. It is written and flushed to disk before the rename in step 5,
+and holds: the batch and its proposal IDs, the SHA-256 of the owned file before
+and after the replace, the previous content, the errors the first load
+reported, and the source-account balances from the first load. It is removed
+only after staging is updated.
+
+Every `apply` and `undo` first looks for a journal, under the writer lock:
+
+- The owned file has the journal's *before* hash: the replace never happened.
+  The journal is discarded and the batch is applied from the start.
+- It has the *after* hash: the batch was written and never validated. Steps 6
+  and 7 run now, against the journal's baseline and not against the ledger as
+  it stands. If they pass, the rows are marked applied. If they fail, the
+  previous content is restored (exit 6).
+- It has neither: someone changed the file since. Autobook touches nothing,
+  marks nothing applied and exits with code 4; `autobook status` shows the
+  interrupted batch for the user to resolve.
+
+A row is therefore never `applied` without having passed the read-back and the
+assertions, also after a crash.
 
 `autobook status` reports where the two stores disagree in ways a re-run does
 not settle: Autobook entries that differ from what staging recorded (the user

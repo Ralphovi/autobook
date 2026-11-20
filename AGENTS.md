@@ -215,6 +215,13 @@ one does not produce an error — it produces a wrong ledger.
   to the entry the first side created. An unmatched second side whose
   counterpart is in `transfers_pending` is queued as "pending transfer", never
   classified.
+- **An interrupted batch is validated before it counts.** Before the replace,
+  write and flush the batch journal beside the staging store: proposal IDs,
+  the owned file's hash before and after, the previous content, and the first
+  load's errors and balances. A run that finds a journal validates that batch
+  against the journal's baseline (read-back and assertions) or restores the
+  previous content; if the owned file matches neither hash it touches nothing
+  and reports. Finding IDs in the ledger proves presence, not validation.
 - **Idempotency on re-run.** Before each batch, find created rows by their
   `autobook-id` and matched rows by the hash in staging, verified in the
   ledger; drop both. This is what makes `apply` safely re-runnable after any
@@ -409,7 +416,9 @@ When a defect class recurs, it graduates to a gate and drops out of review scope
   statement; a rejection without a recorded reason; a statement "repaired"
   instead of rejected; the same file admitted twice.
 - *Idempotency*: a path that can create an entry twice after a crash between
-  "file replaced" and "marked applied"; an `autobook-id` written to a matched
+  "file replaced" and "marked applied"; an interrupted batch marked applied
+  because its IDs are in the ledger, without the journal's read-back and
+  assertions; an `autobook-id` written to a matched
   entry; a value that does not match the proposal-ID pattern treated as
   Autobook's; a missing entry silently re-created; an `apply` or `undo` that
   runs without the writer lock; an undo that removes
