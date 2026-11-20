@@ -10,11 +10,14 @@ name: Issue priority
 # (ADR-0003 sections 4 and 5). `classify` runs the model with a read-only token and
 # writes the plan as an artifact; it cannot write to GitHub. `apply` has `issues: write`,
 # runs no model and installs no SDK, and checks every label in the plan against
-# labels.json before writing.
+# labels.json before writing. A back-fill adds a third job, `dispatch`, which runs no model
+# and only starts one run of this workflow per issue (actions: write), so every issue is
+# triaged in its own concurrency group.
 #
-# An issue holding a checksum-valid IBAN is not sent to the model at all: the classify
-# job checks for one before any call, plans only `needs-triage` and a request for a
-# made-up example, and the issue is triaged again after the edit.
+# An issue holding a checksum-valid IBAN, a credential of a known shape or a GnuCash
+# account path is not sent to the model at all: the classify job checks for them before
+# any call, plans only `needs-triage` and a request to replace the data, and the issue is
+# triaged again after the edit.
 #
 # Cost is bounded by design: one request per issue, capped input, low effort, and no
 # second pass on an edit unless the issue was left at `needs-triage`. Anyone can open an
@@ -27,7 +30,8 @@ name: Issue priority
 #
 # No API key is stored. The classify job asks GitHub for a short-lived OIDC identity token
 # and the SDK exchanges it for a Claude API token (Workload Identity Federation,
-# ADR-0003). The federation rule only accepts runs on refs/heads/main of this repository,
+# ADR-0003), fetching a new identity token at every exchange so a long back-fill does not
+# outlive it. The federation rule only accepts runs on refs/heads/main of this repository,
 # which covers issue events and manual runs from main but not pull requests or other
 # branches.
 
@@ -41,7 +45,7 @@ on:
   workflow_dispatch:
     inputs:
       issue:
-        description: "Issue number to triage (empty = every open issue without a priority)"
+        description: "Issue number to triage (empty = back-fill: one run per open issue without a priority)"
         required: false
       limit:
         description: "Most issues to triage when no number is given"
@@ -59,9 +63,16 @@ on:
 permissions:
   contents: read
 
+# One group per issue, so two runs never triage the same issue at once. A back-fill does
+# not classify anything in its own run: its `dispatch` job starts one run per issue, and
+# each of those joins its issue's group (#70). `queue: max` keeps every pending run (up
+# to 100, first in, first out) instead of the newest replacing the one waiting: a
+# dispatched run must not replace a pending edit, the only run that retries an issue left
+# at needs-triage.
 concurrency:
   group: issue-priority-${{ github.event.issue.number || inputs.issue || github.event.pull_request.number || 'backfill' }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   test:
@@ -78,9 +89,42 @@ jobs:
       - name: Unit tests (offline, no SDK needed)
         run: python -I -m unittest discover -s .github/triage -v
 
+  dispatch:
+    name: dispatch
+    # The back-fill: a manual run with no issue number that writes (not a dry run or check).
+    if: >-
+      github.event_name == 'workflow_dispatch' && !inputs.issue && !inputs.dry_run
+      && !inputs.check
+    runs-on: ubuntu-latest
+    # Finds the issues and starts a run of this workflow for each; runs no model and
+    # writes nothing to issues. `actions: write` is what starting a run needs.
+    permissions:
+      contents: read
+      issues: read
+      actions: write
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+      - name: Start one triage run per issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_LIMIT: ${{ inputs.limit }}
+          REF: ${{ github.ref_name }}
+        # The script rejects a limit below 1 (#68).
+        run: python -I .github/triage/triage_priority.py dispatch --limit "${INPUT_LIMIT:-20}" --ref "$REF"
+
   classify:
     name: classify
-    if: github.event_name != 'pull_request' && github.actor != 'dependabot[bot]'
+    # Issue events, a manual run for one issue, a check, or a back-fill dry run.
+    if: >-
+      github.event_name != 'pull_request' && github.actor != 'dependabot[bot]'
+      && (github.event_name != 'workflow_dispatch' || inputs.issue || inputs.dry_run
+          || inputs.check)
     runs-on: ubuntu-latest
     # Read-only: this job runs the model, so it must not hold a token that can write.
     permissions:
@@ -97,42 +141,48 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.14"
-      - name: Fetch a GitHub identity token for the Claude API
-        id: oidc
+      - name: Check the federation settings
+        id: settings
         env:
           RULE: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          ORG: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          ACCOUNT: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
         run: |
           set -euo pipefail
-          if [ -z "${RULE:-}" ]; then
-            echo "::warning::ANTHROPIC_FEDERATION_RULE_ID is not set; skipping automated triage."
+          # Every variable the token exchange needs, so a half-configured repository skips
+          # cleanly instead of failing each run in the SDK. The workspace is optional: the
+          # rule's own workspace is used when it is not set.
+          missing=()
+          [ -n "${RULE:-}" ] || missing+=(ANTHROPIC_FEDERATION_RULE_ID)
+          [ -n "${ORG:-}" ] || missing+=(ANTHROPIC_ORGANIZATION_ID)
+          [ -n "${ACCOUNT:-}" ] || missing+=(ANTHROPIC_SERVICE_ACCOUNT_ID)
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::warning::Not set: ${missing[*]}; skipping automated triage."
             echo "enabled=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          curl -sSf -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://api.anthropic.com" \
-            | jq -r .value > "$RUNNER_TEMP/gha-jwt"
           echo "enabled=true" >> "$GITHUB_OUTPUT"
       - name: Install the pinned, hash-checked SDK (ADR-0003 section 5)
-        if: steps.oidc.outputs.enabled == 'true'
+        if: steps.settings.outputs.enabled == 'true'
         run: python -m pip install --quiet --require-hashes --no-deps -r .github/triage/requirements.txt
+      # Both steps below sign in through triage_priority.claude_client, which fetches a new
+      # GitHub identity token for every token exchange; one fetched at the start of the job
+      # expires after about five minutes and can be exchanged once (#61).
       - name: Check the Claude API connection
-        if: steps.oidc.outputs.enabled == 'true' && inputs.check
+        if: steps.settings.outputs.enabled == 'true' && inputs.check
         env:
           ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
           ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
           ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
           ANTHROPIC_WORKSPACE_ID: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
-          ANTHROPIC_IDENTITY_TOKEN_FILE: ${{ runner.temp }}/gha-jwt
         run: |
           set -euo pipefail
-          [ -n "${ANTHROPIC_WORKSPACE_ID:-}" ] || unset ANTHROPIC_WORKSPACE_ID
           python -I - <<'EOF'
           import sys
           sys.path.insert(0, ".github/triage")
-          import anthropic
-          from triage_priority import MODEL
+          from triage_priority import MODEL, claude_client
 
-          message = anthropic.Anthropic().messages.create(
+          message = claude_client().messages.create(
               model=MODEL, max_tokens=16,
               messages=[{"role": "user", "content": "Reply with the word ok."}],
           )
@@ -142,14 +192,13 @@ jobs:
           EOF
       - name: Classify
         id: triage
-        if: steps.oidc.outputs.enabled == 'true' && !inputs.check
+        if: steps.settings.outputs.enabled == 'true' && !inputs.check
         env:
           # Identifiers, not secrets; kept as repository variables.
           ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
           ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
           ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
           ANTHROPIC_WORKSPACE_ID: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
-          ANTHROPIC_IDENTITY_TOKEN_FILE: ${{ runner.temp }}/gha-jwt
           GH_TOKEN: ${{ github.token }}
           EVENT_ISSUE: ${{ github.event.issue.number }}
           EVENT_ACTION: ${{ github.event.action }}
@@ -158,8 +207,6 @@ jobs:
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
-          # An empty workspace variable would be sent as an empty ID; drop it instead.
-          [ -n "${ANTHROPIC_WORKSPACE_ID:-}" ] || unset ANTHROPIC_WORKSPACE_ID
           args=()
           if [ -n "${EVENT_ISSUE:-}" ]; then
             args+=(--issue "$EVENT_ISSUE")
@@ -168,6 +215,8 @@ jobs:
           elif [ -n "${INPUT_ISSUE:-}" ]; then
             args+=(--issue "$INPUT_ISSUE")
           else
+            # Only a dry run gets here without an issue; a back-fill that writes runs
+            # through the dispatch job. The script rejects a limit below 1 (#68).
             args+=(--all --limit "${INPUT_LIMIT:-20}")
           fi
           if [ "${INPUT_DRY_RUN:-false}" = "true" ]; then

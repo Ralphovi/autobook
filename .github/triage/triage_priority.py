@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """Automated issue priority triage (ADR-0003 sections 4 and 5).
 
-Two commands, run by two jobs of .github/workflows/triage-priority.yml, because GitHub
-scopes the token's permissions per job (ADR-0003 sections 4 and 5):
+Three commands, run by three jobs of .github/workflows/triage-priority.yml, because
+GitHub scopes the token's permissions per job (ADR-0003 sections 4 and 5):
 
     classify   reads issues, asks Claude once per issue, writes the plan as JSON.
                Runs with a read-only token; the only other credential is the Claude API
                identity token. It never writes to GitHub. An issue holding a
-               checksum-valid IBAN is not sent to the model at all (ADR-0003 section 5).
+               checksum-valid IBAN, a credential of a known shape or a GnuCash account
+               path is not sent to the model at all (ADR-0003 section 5).
     apply      reads that plan, checks every label against the fixed sets in
                labels.json, and applies labels, an assignee and one comment. Runs with
                issues: write and never imports the Anthropic SDK or calls a model.
+    dispatch   the back-fill: finds open issues without a priority and starts one run of
+               the workflow per issue, so each is triaged in its own issue's concurrency
+               group. Runs with issues: read and actions: write; no model, no issue writes.
 
 For each issue that has no `priority:*` label, the model returns a JSON verdict (type,
 severity, reach, area, flags, the review priority of a deferred finding). The priority
@@ -22,6 +26,7 @@ labelled but not restated (ADR-0003 section 4).
 
     triage_priority.py classify --issue 42 --out plan.json
     triage_priority.py classify --all --limit 20 --dry-run
+    triage_priority.py dispatch --limit 20
     triage_priority.py apply --plan plan.json
 Tests: python -I -m unittest discover -s .github/triage
 """
@@ -29,11 +34,14 @@ Tests: python -I -m unittest discover -s .github/triage
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import urllib.parse
+import urllib.request
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -53,9 +61,19 @@ MARKER = "<!-- autobook-triage -->"
 # Text the project template ships in prompt.md and labels.json until they are filled in.
 TEMPLATE_MARKERS = ("PROJECT SUMMARY", "EXAMPLE, replace")
 # Only the workflow's own comments count as triage comments; anyone can type the marker.
+# The REST API names the bot "github-actions[bot]", GraphQL names it "github-actions".
 BOT_LOGIN = "github-actions[bot]"
+GRAPHQL_BOT_LOGIN = "github-actions"
 # An issue left at needs-triage is triaged again only when it is edited, at most this often.
 MAX_RETRIES = 2
+# A back-fill scans at most this many open issues, in pages of BACKFILL_PAGE.
+MAX_SCAN = 500
+BACKFILL_PAGE = 50
+# Only these authors can name a deferred review's priority in an issue; a stranger
+# writing "Review priority: P0" gets the table like any other issue.
+TRUSTED_AUTHORS = ("OWNER", "MEMBER", "COLLABORATOR")
+# Audience of the GitHub OIDC token the Claude API accepts (ADR-0003 section 5).
+OIDC_AUDIENCE = "https://api.anthropic.com"
 
 # `spike` is Autobook's label for a time-boxed investigation; it plays the part other
 # repositories give `research`.
@@ -120,7 +138,10 @@ def verdict_schema(areas: list[str]) -> dict:
             "type": {"type": "string", "enum": list(TYPES)},
             "severity": {"type": "string", "enum": list(SEVERITIES)},
             "reach": {"type": "string", "enum": list(REACHES)},
-            "areas": {"type": "array", "items": {"type": "string", "enum": areas}},
+            # Structured output accepts minItems 0 or 1 only, not maxItems; validate()
+            # rejects a third area.
+            "areas": {"type": "array", "items": {"type": "string", "enum": areas},
+                      "minItems": 1, "description": "One area, or two when it clearly spans both."},
             "flags": {
                 "type": "object",
                 "properties": {f: {"type": "boolean"} for f in FLAGS},
@@ -166,6 +187,10 @@ def validate(verdict: dict, areas: list[str]) -> dict:
         chosen = [a for a in verdict["areas"] if a in areas]
         if len(chosen) != len(verdict["areas"]):
             raise InvalidVerdict(f"areas {verdict['areas']!r}")
+        # One or two (#60). The schema can only say "at least one"; the upper bound is
+        # checked here, and a third area is an answer that did not follow the rules.
+        if not 1 <= len(chosen) <= 2:
+            raise InvalidVerdict(f"{len(chosen)} areas")
         flags = {f: verdict["flags"][f] is True for f in FLAGS}
         # A vulnerability report is a security issue, so it gets the security floor even
         # when the model left that flag off (ADR-0003 section 5).
@@ -176,7 +201,7 @@ def validate(verdict: dict, areas: list[str]) -> dict:
             "type": verdict["type"],
             "severity": verdict["severity"],
             "reach": verdict["reach"],
-            "areas": list(dict.fromkeys(chosen))[:2],
+            "areas": list(dict.fromkeys(chosen)),
             "flags": flags,
             "review_priority": verdict["review_priority"],
             "unsure": verdict["unsure"] is True,
@@ -191,11 +216,14 @@ def validate(verdict: dict, areas: list[str]) -> dict:
 
 
 def compute_priority(severity: str, reach: str, flags: dict[str, bool], review_priority: str,
-                     existing_labels: set[str]) -> tuple[int, int, list[str]]:
+                     existing_labels: set[str],
+                     stated_review: str | None = None) -> tuple[int, int, list[str]]:
     """ADR-0003 sections 2 and 3. Returns (priority, table_priority, notes).
 
     Order where the rules disagree: the table, then a deferred review finding keeps the
-    review's priority, then the floors, so a floor can still raise a review's priority."""
+    review's priority, then the floors, so a floor can still raise a review's priority.
+    A review priority the issue states in its own line (``stated_review``) is a floor
+    too: it raises the priority, and never lowers one the table or a flag set (#65)."""
     base = TABLE[severity][reach]
     prio, notes = base, []
     if review_priority != "none":
@@ -205,11 +233,40 @@ def compute_priority(severity: str, reach: str, flags: dict[str, bool], review_p
         prio = kept
     floors = [FLOORS[k] for k, on in flags.items() if on and k in FLOORS]
     floors += [LABEL_FLOORS[name] for name in sorted(existing_labels) if name in LABEL_FLOORS]
+    if stated_review:
+        floors.append((int(stated_review[1]), "the deferred review's priority the issue states"))
     for floor, label in sorted(set(floors)):
         if floor < prio:
             prio = floor
             notes.append(f"{label} (at least P{floor})")
     return prio, base, notes
+
+
+# The line a maintainer writes when filing a deferred review finding, for example
+# "Review priority: P1. Per ADR-0003 section 3 the issue keeps that priority".
+_REVIEW_LINE = re.compile(r"^[ \t>*_]*review priority[*_]*:[*_ \t]*P([0-3])\b",
+                          re.IGNORECASE | re.MULTILINE)
+
+
+def stated_review_priority(issue: "Issue") -> str | None:
+    """The review priority the issue states in a "Review priority: P1" line (P0 to P3), or None.
+    Only a maintainer's statement counts (TRUSTED_AUTHORS): anyone can open an issue, and
+    a stranger must not be able to set P0 by writing the line (ADR-0003 section 3)."""
+    if issue.author_association not in TRUSTED_AUTHORS:
+        return None
+    found = {f"P{m}" for m in _REVIEW_LINE.findall(issue.body or "")}
+    # Two different lines are a contradiction; leave it to the model and the table.
+    return found.pop() if len(found) == 1 else None
+
+
+def review_priorities(issue: "Issue", verdict: dict) -> tuple[str, str | None]:
+    """(the review priority to keep, the stated review priority to use as a floor). The
+    issue's own line replaces the model's reading; the model's is used only for a
+    maintainer's issue, for the same reason the line is."""
+    stated = stated_review_priority(issue)
+    if stated or issue.author_association not in TRUSTED_AUTHORS:
+        return "none", stated
+    return verdict["review_priority"], None
 
 
 # --- never echo the issue back ------------------------------------------------------------
@@ -290,6 +347,13 @@ class Issue:
     is_pr: bool = False
     author_is_bot: bool = False
     triage_count: int = 0  # the workflow's own triage comments on the issue
+    author_association: str = "NONE"  # OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE ...
+
+
+def text_hash(issue: Issue) -> str:
+    """Fingerprint of the text the model reads, so the apply job can tell an edit made
+    while the model ran."""
+    return hashlib.sha256(f"{issue.title}\0{issue.body or ''}".encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -303,6 +367,9 @@ class Plan:
     # many triage comments the issue had. The apply job checks both against a fresh read.
     retry: bool = False
     triage_count: int = 0
+    # The text that was classified (text_hash); the apply job drops the plan when the
+    # issue's text changed since, and the run for that edit classifies the new text.
+    text_hash: str = ""
 
 
 def skip_reason(issue: Issue, retry: bool = False) -> str | None:
@@ -353,7 +420,7 @@ def build_plan(issue: Issue, verdict: dict, config: dict, *, model: str, usage: 
         reasons = {k: "Not restated here; see the note below." for k in verdict["reasons"]}
     else:
         reasons = {k: scrub(v, issue_text) for k, v in verdict["reasons"].items()}
-    plan, rows = Plan(number=issue.number), []
+    plan, rows = Plan(number=issue.number, text_hash=text_hash(issue)), []
 
     have_type = [t for t in TYPES if t in issue.labels]
     kind = have_type[0] if have_type else verdict["type"]
@@ -367,9 +434,17 @@ def build_plan(issue: Issue, verdict: dict, config: dict, *, model: str, usage: 
         plan.add_labels.append(verdict["type"])
         rows.append(_row(verdict["type"], reasons["type"]))
 
-    for area in verdict["areas"]:
-        plan.add_labels.append(f"area:{area}")
-    if verdict["areas"]:
+    # Areas and the owner are set only with a placed priority. An unsure verdict waits at
+    # needs-triage, and a retry after an edit may place the issue in other areas; areas set
+    # on the first pass would stay next to the new ones, with the first pass's owner.
+    placed = kind in PRIORITISED_TYPES and not verdict["unsure"]
+    have_areas = sorted(l for l in issue.labels if l.startswith("area:"))
+    if placed and have_areas:
+        # Like the type: an area someone already set wins, so there are never more than two.
+        rows.append(_row(", ".join(have_areas).replace(", ", "`, `"),
+                         "Kept the area the issue already had."))
+    elif placed:
+        plan.add_labels += [f"area:{a}" for a in verdict["areas"]]
         rows.append(_row(", ".join(f"area:{a}" for a in verdict["areas"]).replace(", ", "`, `"),
                          reasons["area"]))
 
@@ -382,9 +457,10 @@ def build_plan(issue: Issue, verdict: dict, config: dict, *, model: str, usage: 
                    else scrub(verdict["missing"], issue_text))
         rows.append(_row("needs-triage", f"Severity or reach could not be placed. Missing: {missing}"))
     else:
+        review, stated = review_priorities(issue, verdict)
         prio, base, notes = compute_priority(verdict["severity"], verdict["reach"],
-                                             verdict["flags"], verdict["review_priority"],
-                                             issue.labels)
+                                             verdict["flags"], review, issue.labels,
+                                             stated_review=stated)
         if "needs-triage" in issue.labels:
             plan.remove_labels.append("needs-triage")
         plan.add_labels += [f"sev:{verdict['severity']}", f"reach:{verdict['reach']}",
@@ -396,10 +472,10 @@ def build_plan(issue: Issue, verdict: dict, config: dict, *, model: str, usage: 
             why += " Then: " + "; ".join(notes) + f". {reasons['overrides']}"
         rows.append(_row(f"priority:P{prio}", why))
 
-    if not issue.assignees:
+    if placed and not issue.assignees:
         owners = config.get("owners", {})
-        area = verdict["areas"][0] if verdict["areas"] else ""
-        plan.assignee = owners.get(f"area:{area}") or owners.get("*")
+        area = have_areas[0] if have_areas else f"area:{verdict['areas'][0]}"
+        plan.assignee = owners.get(area) or owners.get("*")
 
     lines = [
         MARKER,
@@ -425,21 +501,29 @@ def build_plan(issue: Issue, verdict: dict, config: dict, *, model: str, usage: 
                       "it and edit it out of the issue; editing alone does not remove it from "
                       "the issue's history."]
     if truncated:
-        lines += ["", f"Only the first {MAX_BODY:,} characters of the description were read."]
+        lines += ["", TRUNCATED_NOTE]
     lines += ["", f"<sub>{model} · {usage}</sub>"]
     plan.comment = "\n".join(lines) + "\n"
     return plan
 
 
-def unclassified_plan(issue: Issue, why: str, *, model: str, usage: str) -> Plan:
-    """When the model declined or ran out of room: flag for a human, guess nothing."""
-    return Plan(number=issue.number, add_labels=["needs-triage"], comment="\n".join([
+TRUNCATED_NOTE = f"Only the first {MAX_BODY:,} characters of the description were read."
+
+
+def unclassified_plan(issue: Issue, why: str, *, model: str, usage: str,
+                      truncated: bool = False) -> Plan:
+    """When the model declined or ran out of room: flag for a human, guess nothing. A cut
+    description is stated, since it may be why the model could not classify it."""
+    lines = [
         MARKER,
         f"**Automated triage** could not classify this issue ({why}). A maintainer will "
         "triage it by hand under ADR-0003.",
-        "",
-        f"<sub>{model} · {usage}</sub>",
-    ]) + "\n")
+    ]
+    if truncated:
+        lines += ["", TRUNCATED_NOTE]
+    lines += ["", f"<sub>{model} · {usage}</sub>"]
+    return Plan(number=issue.number, add_labels=["needs-triage"], comment="\n".join(lines) + "\n",
+                text_hash=text_hash(issue))
 
 
 # --- a real IBAN is never sent to the model -----------------------------------------------
@@ -468,16 +552,78 @@ def contains_real_iban(text: str) -> bool:
     return False
 
 
-def held_back_plan(issue: Issue) -> Plan:
-    """An issue with a real IBAN in it: ask for a synthetic example, classify nothing."""
+# Credentials by their published shapes. Each is specific enough that ordinary prose and
+# code rarely match; a match costs a maintainer's manual triage, a miss leaks a secret.
+_SECRETS = re.compile("|".join([
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----",                     # PEM private key
+    r"\bsk-ant-[A-Za-z0-9_-]{20,}",                            # Anthropic
+    r"\bsk-(?:proj-)?[A-Za-z0-9_-]{32,}",                      # OpenAI and similar
+    r"\bgh[pousr]_[A-Za-z0-9]{36,}",                           # GitHub tokens
+    r"\bgithub_pat_[A-Za-z0-9_]{40,}",                         # GitHub fine-grained token
+    r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b",                          # AWS access key ID
+    r"\bAIza[0-9A-Za-z_-]{35}",                                # Google API key
+    r"\bxox[abposr]-[A-Za-z0-9-]{10,}",                        # Slack
+    r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",  # JWT
+    # A value assigned to a secret-named key, also with a prefix (PAPERLESS_TOKEN,
+    # client_secret, AWS_SECRET_ACCESS_KEY): at least 8 characters with a letter and a
+    # digit, so `token: <your token>`, `password = os.environ[...]` and prose do not count.
+    # The prefix is bounded so a long identifier cannot make the search quadratic.
+    r"(?<![A-Za-z0-9])[A-Za-z0-9_.-]{0,40}"
+    r"(?i:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|auth)"
+    r"[\"']?\s*[:=]\s*[\"']?(?=[^\s\"']*\d)(?=[^\s\"']*[A-Za-z])[A-Za-z0-9_\-+/=!#%^&*~]{8,}",
+]), re.ASCII)
+
+# A GnuCash account path under a standard top-level account, German or English, in any
+# case ("Ausgaben:Arzt", "expenses:Medical:Dentist"). An account name can be Art. 9 data on
+# its own (AGENTS.md: "a name like Kirchensteuer"). Imbalance-EUR and Orphan-EUR have no
+# path. A path under a top-level account the user named themselves is not recognised; that
+# residual risk is recorded in ADR-0003.
+_ACCOUNT_PATH = re.compile(
+    r"\b(?i:Ausgaben|Einnahmen|Aufwand|Aufwendungen|Erträge|Ertraege|Aktiva|Passiva|"
+    r"Verbindlichkeiten|Eigenkapital|Vermögen|Vermoegen|Expenses|Expense|Income|Assets|"
+    r"Liabilities|Equity):[^\s:,;()\[\]`'\"]{2,}")
+
+
+def hold_back_reason(text: str) -> str | None:
+    """Why the text must not reach the model, or None (#57, ADR-0003 section 5). The
+    whole issue is checked, not just the part that would be sent. Payee names, memo
+    phrases and amounts without one of these still go to the model; the model flags them
+    and the comment asks for a made-up example."""
+    if contains_real_iban(text):
+        return "iban"
+    if _SECRETS.search(text):
+        return "secret"
+    if _ACCOUNT_PATH.search(text):
+        return "account"
+    return None
+
+
+_HELD_BACK = {
+    "iban": ("it seems to contain a real IBAN",
+             "Please replace the statement data with a made-up example that shows the same "
+             "problem (an IBAN with a wrong check number is fine), and edit the original "
+             "out; editing alone does not remove it from the issue's history."),
+    "secret": ("it seems to contain a credential: a key, a token or a password",
+               "Please rotate it, and edit it out of the issue; editing alone does not "
+               "remove it from the issue's history. A placeholder such as `<token>` is fine."),
+    "account": ("it names an account from a GnuCash chart of accounts, which can be "
+                "personal data on its own",
+                "If it is from a real book, please replace it with a made-up one, and edit "
+                "the original out; editing alone does not remove it from the issue's "
+                "history. If it is already made up, a maintainer will triage the issue by "
+                "hand."),
+}
+
+
+def held_back_plan(issue: Issue, reason: str = "iban") -> Plan:
+    """An issue the bot may not send to the model: say why in general terms (never the
+    match itself), ask for it to be replaced, classify nothing."""
+    found, ask = _HELD_BACK[reason]
     return Plan(number=issue.number, add_labels=["needs-triage"], comment="\n".join([
         MARKER,
-        "**Automated triage** did not read this issue: it seems to contain a real IBAN, so "
-        "it was not sent to the model. Please replace the statement data with a made-up "
-        "example that shows the same problem (an IBAN with a wrong check number is fine), "
-        "and edit the original out; editing alone does not remove it from the issue's "
-        "history. The issue is triaged again after the edit.",
-    ]) + "\n")
+        f"**Automated triage** did not read this issue: {found}, so it was not sent to "
+        f"the model. {ask} The issue is triaged again after the edit.",
+    ]) + "\n", text_hash=text_hash(issue))
 
 
 # --- the plan handed from the classify job to the apply job -------------------------------
@@ -498,6 +644,7 @@ def check_plan(entry: dict, config: dict) -> Plan:
         comment = entry["comment"]
         retry = entry["retry"]
         triage_count = entry["triage_count"]
+        digest = entry["text_hash"]
     except (KeyError, TypeError) as e:
         raise InvalidPlan(f"missing field: {e}") from e
     if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
@@ -524,8 +671,11 @@ def check_plan(entry: dict, config: dict) -> Plan:
         raise InvalidPlan(f"retry {retry!r}")
     if not isinstance(triage_count, int) or isinstance(triage_count, bool) or triage_count < 0:
         raise InvalidPlan(f"triage count {triage_count!r}")
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise InvalidPlan(f"text hash {digest!r}")
     return Plan(number=number, add_labels=list(labels), remove_labels=list(remove),
-                assignee=assignee, comment=comment, retry=retry, triage_count=triage_count)
+                assignee=assignee, comment=comment, retry=retry, triage_count=triage_count,
+                text_hash=digest)
 
 
 def write_plans(path: Path, plans: list[Plan]) -> None:
@@ -549,10 +699,62 @@ class Result:
     usage: str
 
 
+def github_identity_token() -> str:
+    """A fresh GitHub OIDC token for the Claude API. GitHub's token expires after about
+    five minutes and can be exchanged once, so the SDK asks for a new one at every
+    exchange instead of reading one file fetched at the start of the job (#61)."""
+    url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+    sep = "&" if urllib.parse.urlsplit(url).query else "?"
+    request = urllib.request.Request(
+        f"{url}{sep}audience={urllib.parse.quote(OIDC_AUDIENCE, safe='')}",
+        headers={"Authorization": f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        value = json.load(response).get("value")
+    if not isinstance(value, str) or not value:
+        raise RuntimeError("GitHub returned no identity token")
+    return value
+
+
+def claude_client(**options):
+    """The Claude API client. In a workflow job with `id-token: write` it signs in by
+    Workload Identity Federation with a token provider that fetches GitHub's identity token
+    anew for each exchange; elsewhere the SDK reads its usual environment."""
+    import anthropic
+
+    if not os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL"):
+        return anthropic.Anthropic(**options)
+    from anthropic.lib.credentials import WorkloadIdentityCredentials
+
+    credentials = WorkloadIdentityCredentials(
+        identity_token_provider=github_identity_token,
+        federation_rule_id=os.environ["ANTHROPIC_FEDERATION_RULE_ID"],
+        organization_id=os.environ["ANTHROPIC_ORGANIZATION_ID"],
+        service_account_id=os.environ.get("ANTHROPIC_SERVICE_ACCOUNT_ID") or None,
+        # An empty variable would be sent as an empty ID; leave it out instead.
+        workspace_id=os.environ.get("ANTHROPIC_WORKSPACE_ID") or None,
+    )
+    return anthropic.Anthropic(credentials=credentials, **options)
+
+
+def usage_line(u) -> str:
+    """Tokens billed for the request. After a server-side fallback the top-level usage
+    covers only the attempt that answered; every attempt, the declined one included, is
+    in `usage.iterations`, so those are summed when present (#62)."""
+    parts = getattr(u, "iterations", None) or [u]
+    def total(name: str) -> int:
+        return sum(getattr(p, name, 0) or 0 for p in parts)
+    cached, created = total("cache_read_input_tokens"), total("cache_creation_input_tokens")
+    line = (f"{total('input_tokens') + cached + created:,} tokens in ({cached:,} cached), "
+            f"{total('output_tokens'):,} out")
+    if len(parts) > 1:
+        line += f" over {len(parts)} attempts"
+    return line
+
+
 def classify_issue(client, prompt: str, issue: Issue, areas: list[str]) -> tuple[Result, bool]:
-    # The caller holds back an issue with a real IBAN; refuse here too, so no path sends one.
-    if contains_real_iban(f"{issue.title}\n{issue.body or ''}"):
-        raise ValueError(f"#{issue.number} holds a real IBAN and must not reach the model")
+    # The caller holds such an issue back; refuse here too, so no path sends one.
+    if (why := hold_back_reason(f"{issue.title}\n{issue.body or ''}")):
+        raise ValueError(f"#{issue.number} must not reach the model ({why})")
     text, truncated = issue_input(issue)
     response = client.beta.messages.create(
         model=MODEL,
@@ -567,9 +769,7 @@ def classify_issue(client, prompt: str, issue: Issue, areas: list[str]) -> tuple
         system=[{"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": text}],
     )
-    u = response.usage
-    usage = (f"{u.input_tokens + (u.cache_read_input_tokens or 0) + (u.cache_creation_input_tokens or 0):,}"
-             f" tokens in ({u.cache_read_input_tokens or 0:,} cached), {u.output_tokens:,} out")
+    usage = usage_line(response.usage)
     model = response.model
     if response.stop_reason == "refusal":
         return Result(None, "the model declined to classify it", model, usage), truncated
@@ -617,6 +817,46 @@ def fetch_issue(repo: str, number: int) -> Issue:
         is_pr="pull_request" in data,
         author_is_bot=(data.get("user") or {}).get("type") == "Bot",
         triage_count=triage_comments(flat),
+        author_association=data.get("author_association") or "NONE",
+    )
+
+
+# One page of open issues, oldest first, with what skip_reason needs: labels, author and
+# comments (#69). One request covers BACKFILL_PAGE issues instead of two REST calls each.
+_BACKFILL_QUERY = """
+query($owner: String!, $name: String!, $first: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    issues(first: $first, after: $cursor, states: OPEN,
+           orderBy: {field: CREATED_AT, direction: ASC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        number
+        author { __typename login }
+        labels(first: 100) { nodes { name } }
+        comments(first: 100) { totalCount nodes { author { __typename login } body } }
+      }
+    }
+  }
+}
+"""
+
+
+def _backfill_issue(node: dict) -> Issue | None:
+    """An Issue from one GraphQL node, or None when its comments did not fit the page and
+    the caller must read it through REST."""
+    comments = node.get("comments") or {}
+    if (comments.get("totalCount") or 0) > len(comments.get("nodes") or []):
+        return None
+    author = node.get("author") or {}
+    return Issue(
+        number=node["number"], title="", body="",
+        labels={l["name"] for l in (node.get("labels") or {}).get("nodes") or []},
+        assignees=[],
+        author_is_bot=author.get("__typename") == "Bot",
+        triage_count=sum(1 for c in comments.get("nodes") or []
+                         if MARKER in (c.get("body") or "")
+                         and (c.get("author") or {}).get("__typename") == "Bot"
+                         and (c.get("author") or {}).get("login") == GRAPHQL_BOT_LOGIN),
     )
 
 
@@ -624,17 +864,49 @@ def open_untriaged(repo: str, limit: int) -> list[int]:
     """Up to ``limit`` open issues a back-fill should triage, oldest first. The limit is
     applied after skipping, so issues that stay without a priority after their one
     automated pass (needs-triage, or a type with no priority) never fill a batch."""
-    data = json.loads(gh("issue", "list", "-R", repo, "--state", "open", "--limit", "500",
-                         "--json", "number,labels"))
-    candidates = sorted(i["number"] for i in data
-                        if not any(l["name"].startswith("priority:") for l in i["labels"]))
-    numbers = []
-    for number in candidates:
-        if len(numbers) == limit:
+    owner, name = repo.split("/", 1)
+    numbers, cursor, scanned = [], None, 0
+    while len(numbers) < limit and scanned < MAX_SCAN:
+        args = ["api", "graphql", "-f", f"query={_BACKFILL_QUERY}", "-f", f"owner={owner}",
+                "-f", f"name={name}", "-F", f"first={min(BACKFILL_PAGE, MAX_SCAN - scanned)}"]
+        if cursor:
+            args += ["-f", f"cursor={cursor}"]
+        page = json.loads(gh(*args))["data"]["repository"]["issues"]
+        for node in page["nodes"]:
+            scanned += 1
+            if len(numbers) >= limit:
+                break
+            if any(l["name"].startswith("priority:")
+                   for l in (node.get("labels") or {}).get("nodes") or []):
+                continue
+            candidate = _backfill_issue(node) or fetch_issue(repo, node["number"])
+            if skip_reason(candidate) is None:
+                numbers.append(candidate.number)
+        if not page["pageInfo"]["hasNextPage"]:
             break
-        if skip_reason(fetch_issue(repo, number)) is None:
-            numbers.append(number)
+        cursor = page["pageInfo"]["endCursor"]
     return numbers
+
+
+# A back-fill does not classify issues itself: it starts one run of this workflow per
+# issue. Each run then sits in its issue's concurrency group with the issue events' runs,
+# so no two triage runs ever work on the same issue at once (#70).
+WORKFLOW_FILE = "triage-priority.yml"
+
+
+def dispatch_runs(repo: str, numbers: list[int], ref: str) -> int:
+    """Start one run per issue; returns how many could not be started. One failure does
+    not stop the others."""
+    failed = 0
+    for number in numbers:
+        try:
+            gh("workflow", "run", WORKFLOW_FILE, "-R", repo, "--ref", ref, "-f", f"issue={number}")
+        except subprocess.CalledProcessError:
+            print(f"#{number}: could not start a triage run", file=sys.stderr)
+            failed += 1
+            continue
+        print(f"#{number}: triage run started")
+    return failed
 
 
 def ensure_labels(repo: str, config: dict) -> None:
@@ -642,34 +914,99 @@ def ensure_labels(repo: str, config: dict) -> None:
                                                  "--json", "name"))}
     for group in ("severity", "reach", "area", "priority", "other"):
         for name, spec in config[group].items():
-            if name not in existing:
+            if name in existing:
+                continue
+            try:
                 gh("label", "create", name, "-R", repo, "--color", spec["color"],
                    "--description", spec["description"])
-                print(f"created label {name}")
+            except subprocess.CalledProcessError as e:
+                # Another run created it since the list was read (#66): that is the goal.
+                if "already exists" not in (e.stderr or ""):
+                    raise
+                print(f"label {name} was created by another run")
+                continue
+            print(f"created label {name}")
 
 
-def apply_plan(repo: str, plan: Plan) -> None:
-    # Re-read the issue: a human may have set a priority since the classify job read it,
-    # or another run (a back-fill and an issue event can overlap) may have triaged it.
-    fresh = fetch_issue(repo, plan.number)
+def _apply_skip(plan: Plan, fresh: Issue) -> str | None:
+    """Why the apply job must not write ``plan`` to the issue as it is now, or None."""
     if fresh.triage_count != plan.triage_count:
-        print(f"#{plan.number}: skipped at apply time (triaged by another run since this "
-              "plan was made)")
-        return
-    if (why := skip_reason(fresh, retry=plan.retry)):
+        # A back-fill and an issue event can overlap; the other run applied first.
+        return "triaged by another run since this plan was made"
+    if text_hash(fresh) != plan.text_hash:
+        # The author edited while the model ran (#58). The run that edit queued
+        # classifies the new text; this plan is for the old one.
+        return "the issue text changed after it was classified"
+    return skip_reason(fresh, retry=plan.retry)
+
+
+def apply_plan(repo: str, plan: Plan) -> bool:
+    """Write the plan to the issue. Returns False when it was skipped. The labels and
+    the comment go on together: when a write fails, the issue is read again and set
+    straight, so a rerun triages it instead of skipping it for a priority that has no
+    comment explaining it (#59)."""
+    # Re-read the issue: a human may have set a priority or an assignee since the classify
+    # job read it, the text may have changed, or another run may have triaged it.
+    fresh = fetch_issue(repo, plan.number)
+    if (why := _apply_skip(plan, fresh)):
         print(f"#{plan.number}: skipped at apply time ({why})")
-        return
-    if plan.add_labels:
-        gh("issue", "edit", str(plan.number), "-R", repo, "--add-label", ",".join(plan.add_labels))
-    if plan.remove_labels:
-        gh("issue", "edit", str(plan.number), "-R", repo, "--remove-label", ",".join(plan.remove_labels))
-    if plan.assignee and not fresh.assignees:
+        return False
+    number = str(plan.number)
+    added = [l for l in plan.add_labels if l not in fresh.labels]
+    removed = [l for l in plan.remove_labels if l in fresh.labels]
+    try:
+        if added:
+            gh("issue", "edit", number, "-R", repo, "--add-label", ",".join(added))
+        if removed:
+            gh("issue", "edit", number, "-R", repo, "--remove-label", ",".join(removed))
+        gh("issue", "comment", number, "-R", repo, "--body-file", "-", input=plan.comment)
+    except subprocess.CalledProcessError:
+        _recover(repo, plan, fresh, added, removed)
+        raise
+    # Last, and only when nobody is assigned now: a maintainer may have assigned someone
+    # while the model ran or while the labels went on (#67, ADR-0003 section 4). Read
+    # just before writing; a failure here loses nothing else.
+    if plan.assignee:
         try:
-            gh("issue", "edit", str(plan.number), "-R", repo, "--add-assignee", plan.assignee)
+            if not fresh.assignees and not current_assignees(repo, plan.number):
+                gh("issue", "edit", number, "-R", repo, "--add-assignee", plan.assignee)
         except subprocess.CalledProcessError as e:
             print(f"#{plan.number}: could not assign {plan.assignee}: {e.stderr.strip()}",
                   file=sys.stderr)
-    gh("issue", "comment", str(plan.number), "-R", repo, "--body-file", "-", input=plan.comment)
+    return True
+
+
+def current_assignees(repo: str, number: int) -> list[str]:
+    data = json.loads(gh("api", f"repos/{repo}/issues/{number}"))
+    return [a["login"] for a in data.get("assignees") or []]
+
+
+def _recover(repo: str, plan: Plan, before: Issue, added: list[str], removed: list[str]) -> None:
+    """After a failed write, make labels and comment agree again. A failed call may still
+    have reached GitHub (a lost response), so the issue is read again rather than trusting
+    which calls returned: if the comment is there, the labels it explains are completed;
+    if not, the labels this run added are taken off and needs-triage put back."""
+    number = str(plan.number)
+    try:
+        now = fetch_issue(repo, plan.number)
+        if now.triage_count > before.triage_count:
+            missing = [l for l in added if l not in now.labels]
+            extra = [l for l in removed if l in now.labels]
+            if missing:
+                gh("issue", "edit", number, "-R", repo, "--add-label", ",".join(missing))
+            if extra:
+                gh("issue", "edit", number, "-R", repo, "--remove-label", ",".join(extra))
+            return
+        on = [l for l in added if l in now.labels]
+        off = [l for l in removed if l not in now.labels]
+        if on:
+            gh("issue", "edit", number, "-R", repo, "--remove-label", ",".join(on))
+        if off:
+            gh("issue", "edit", number, "-R", repo, "--add-label", ",".join(off))
+    except subprocess.CalledProcessError:
+        print(f"::error::#{number}: a triage write failed and the issue could not be set "
+              f"straight; check that its labels ({', '.join(added)}) match its triage comment",
+              file=sys.stderr)
 
 
 # --- commands -----------------------------------------------------------------------------
@@ -683,6 +1020,12 @@ def load_prompt(path: Path = HERE / "prompt.md") -> str:
     return re.sub(r"<!--.*?-->\n?", "", text, flags=re.S)
 
 
+def _stamp(plan: Plan, issue: Issue, args) -> Plan:
+    """Record on the plan how this run was started; the builders record the text."""
+    plan.retry, plan.triage_count = args.retry, issue.triage_count
+    return plan
+
+
 def run_classify(args) -> int:
     import anthropic  # here, so the apply job and the tests need no SDK installed
 
@@ -691,7 +1034,7 @@ def run_classify(args) -> int:
         raise SystemExit("labels.json still has the template's example area; replace it first")
     areas = area_names(config)
     prompt = load_prompt()
-    client = anthropic.Anthropic(max_retries=3, timeout=120)
+    client = claude_client(max_retries=3, timeout=120)
 
     numbers = open_untriaged(args.repo, args.limit) if args.all else [args.issue]
     if not numbers:
@@ -703,10 +1046,9 @@ def run_classify(args) -> int:
             if (why := skip_reason(issue, retry=args.retry)):
                 print(f"#{number}: skipped ({why})")
                 continue
-            if contains_real_iban(f"{issue.title}\n{issue.body or ''}"):
-                plan = held_back_plan(issue)
-                plan.retry, plan.triage_count = args.retry, issue.triage_count
-                print(f"#{number}: not sent to the model (a real IBAN); {', '.join(plan.add_labels)}")
+            if (held := hold_back_reason(f"{issue.title}\n{issue.body or ''}")):
+                plan = _stamp(held_back_plan(issue, held), issue, args)
+                print(f"#{number}: not sent to the model ({held}); {', '.join(plan.add_labels)}")
                 if args.dry_run:
                     print(plan.comment)
                 plans.append(plan)
@@ -726,11 +1068,12 @@ def run_classify(args) -> int:
                 failed += 1
                 continue
             if result.verdict is None:
-                plan = unclassified_plan(issue, result.failure, model=result.model, usage=result.usage)
+                plan = unclassified_plan(issue, result.failure, model=result.model,
+                                         usage=result.usage, truncated=truncated)
             else:
                 plan = build_plan(issue, result.verdict, config, model=result.model,
                                   usage=result.usage, truncated=truncated)
-            plan.retry, plan.triage_count = args.retry, issue.triage_count
+            _stamp(plan, issue, args)
             print(f"#{number}: {', '.join(plan.add_labels)}; assignee {plan.assignee}; {result.usage}")
             if args.dry_run:
                 print(plan.comment)
@@ -750,10 +1093,36 @@ def run_apply(args) -> int:
         print("nothing to apply")
         return 0
     ensure_labels(args.repo, config)
+    failed = 0
     for plan in plans:
-        apply_plan(args.repo, plan)
-        print(f"#{plan.number}: applied {', '.join(plan.add_labels)}")
-    return 0
+        # One issue that cannot be written does not stop the others.
+        try:
+            if apply_plan(args.repo, plan):
+                print(f"#{plan.number}: applied {', '.join(plan.add_labels)}")
+        except subprocess.CalledProcessError:
+            print(f"#{plan.number}: not applied", file=sys.stderr)
+            failed += 1
+    return 1 if failed else 0
+
+
+def run_dispatch(args) -> int:
+    """The back-fill: find the open issues to triage and start one run for each (#70)."""
+    numbers = open_untriaged(args.repo, args.limit)
+    if not numbers:
+        print("no open issues without a priority")
+    return 1 if dispatch_runs(args.repo, numbers, args.ref) else 0
+
+
+def positive_int(text: str) -> int:
+    """argparse type for --limit: a back-fill of zero or fewer issues is a mistake, and a
+    negative one used to mean no cap at all (#68)."""
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a whole number") from None
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be 1 or more, not {value}")
+    return value
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -763,18 +1132,27 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("classify", help="ask the model; write the plan, never GitHub")
     target = c.add_mutually_exclusive_group(required=True)
     target.add_argument("--issue", type=int)
-    target.add_argument("--all", action="store_true", help="open issues without a priority")
-    c.add_argument("--limit", type=int, default=20, help="cap for --all")
+    target.add_argument("--all", action="store_true",
+                        help="open issues without a priority; only with --dry-run")
+    c.add_argument("--limit", type=positive_int, default=20, help="cap for --all (1 or more)")
     c.add_argument("--dry-run", action="store_true", help="print the plan, write no file")
     c.add_argument("--out", help="where to write the plan (JSON)")
     c.add_argument("--retry", action="store_true",
                    help="the issue was edited: retry it if it is at needs-triage")
     a = sub.add_parser("apply", help="check the plan and write it to GitHub; no model")
     a.add_argument("--plan", required=True)
+    d = sub.add_parser("dispatch", help="back-fill: start one triage run per open issue")
+    d.add_argument("--limit", type=positive_int, default=20, help="most issues (1 or more)")
+    d.add_argument("--ref", default="main", help="branch the runs start from")
     args = ap.parse_args(argv)
     if not args.repo:
         ap.error("--repo or $GITHUB_REPOSITORY is required")
-    return run_classify(args) if args.command == "classify" else run_apply(args)
+    if args.command == "classify" and args.all and not args.dry_run:
+        # A back-fill that writes goes through `dispatch`, one run per issue, so it never
+        # races an issue event's run (#70).
+        ap.error("classify --all only previews (--dry-run); use dispatch to back-fill")
+    commands = {"classify": run_classify, "apply": run_apply, "dispatch": run_dispatch}
+    return commands[args.command](args)
 
 
 if __name__ == "__main__":
