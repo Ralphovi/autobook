@@ -890,16 +890,23 @@ def open_untriaged(repo: str, limit: int) -> list[int]:
 
 # A back-fill does not classify issues itself: it starts one run of this workflow per
 # issue. Each run then sits in its issue's concurrency group with the issue events' runs,
-# so no two triage runs ever work on the same issue at once (#70). A back-fill that
-# classified in its own run could not share those groups: GitHub keeps only one pending
-# run per group, so issue events queued behind it would cancel each other.
+# so no two triage runs ever work on the same issue at once (#70).
 WORKFLOW_FILE = "triage-priority.yml"
 
 
-def dispatch_runs(repo: str, numbers: list[int], ref: str) -> None:
+def dispatch_runs(repo: str, numbers: list[int], ref: str) -> int:
+    """Start one run per issue; returns how many could not be started. One failure does
+    not stop the others."""
+    failed = 0
     for number in numbers:
-        gh("workflow", "run", WORKFLOW_FILE, "-R", repo, "--ref", ref, "-f", f"issue={number}")
+        try:
+            gh("workflow", "run", WORKFLOW_FILE, "-R", repo, "--ref", ref, "-f", f"issue={number}")
+        except subprocess.CalledProcessError:
+            print(f"#{number}: could not start a triage run", file=sys.stderr)
+            failed += 1
+            continue
         print(f"#{number}: triage run started")
+    return failed
 
 
 def ensure_labels(repo: str, config: dict) -> None:
@@ -1103,8 +1110,7 @@ def run_dispatch(args) -> int:
     numbers = open_untriaged(args.repo, args.limit)
     if not numbers:
         print("no open issues without a priority")
-    dispatch_runs(args.repo, numbers, args.ref)
-    return 0
+    return 1 if dispatch_runs(args.repo, numbers, args.ref) else 0
 
 
 def positive_int(text: str) -> int:

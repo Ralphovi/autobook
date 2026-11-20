@@ -65,12 +65,14 @@ permissions:
 
 # One group per issue, so two runs never triage the same issue at once. A back-fill does
 # not classify anything in its own run: its `dispatch` job starts one run per issue, and
-# each of those joins its issue's group (#70). Sharing one group for everything would not
-# work: GitHub keeps only one pending run per group, so queued issue events would cancel
-# each other.
+# each of those joins its issue's group (#70). `queue: max` keeps every pending run (up
+# to 100, first in, first out) instead of the newest replacing the one waiting: a
+# dispatched run must not replace a pending edit, the only run that retries an issue left
+# at needs-triage.
 concurrency:
   group: issue-priority-${{ github.event.issue.number || inputs.issue || github.event.pull_request.number || 'backfill' }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   test:

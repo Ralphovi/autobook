@@ -537,6 +537,21 @@ class Dispatch(unittest.TestCase):
             ("workflow", "run", "triage-priority.yml", "-R", "o/r", "--ref", "main",
              "-f", "issue=9")])
 
+    def test_one_failed_dispatch_does_not_stop_the_others(self) -> None:
+        # Codex review: a 502 starting one run used to end the back-fill.
+        calls = []
+        with mock.patch.object(tp, "open_untriaged", return_value=[4, 9]), \
+                mock.patch.object(tp, "gh", side_effect=gh_stub(calls, fail=lambda a: "issue=4" in a)), \
+                mock.patch("sys.stdout"), mock.patch("sys.stderr"):
+            self.assertEqual(tp.main(["--repo", "o/r", "dispatch"]), 1)
+        self.assertEqual([a[-1] for a in calls], ["issue=4", "issue=9"])
+
+    def test_pending_runs_are_queued_not_replaced(self) -> None:
+        # Codex review: a dispatched run must not replace a pending edit run.
+        block = Workflow.TEXT[Workflow.TEXT.index("\nconcurrency:"):Workflow.TEXT.index("\njobs:")]
+        self.assertIn("queue: max", block)
+        self.assertIn("cancel-in-progress: false", block)
+
     def test_classify_all_only_previews(self) -> None:
         with self.assertRaises(SystemExit), mock.patch("sys.stderr"):
             tp.main(["--repo", "o/r", "classify", "--all", "--out", "plan.json"])
