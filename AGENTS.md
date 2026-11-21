@@ -171,8 +171,9 @@ one does not produce an error — it produces a wrong ledger.
   the read-back and every assertion have passed. For a created row the
   read-back finds its proposal ID exactly once with the approved date, accounts
   and amounts. A matched row wrote nothing, so its ID is not looked for: its
-  recorded entry must still be present, with a posting of the row's amount
-  and currency in the row's source account.
+  recorded entry must still be present and still satisfy the whole match
+  predicate (source account, amount, currency, date window, claim). The
+  predicate is evaluated at proposal, again at apply, and in the read-back.
 - **The assertions.** The load reports no error it did not report before the
   write. No byte of the owned file before the appended entries changed, and no
   other file changed. The balance of every account the batch wrote postings to
@@ -221,12 +222,19 @@ one does not produce an error — it produces a wrong ledger.
   counterpart is in `transfers_pending` is queued as "pending transfer", never
   classified.
 - **An interrupted batch is validated before it counts.** Before the replace,
-  write and flush the batch journal beside the staging store: proposal IDs,
-  the owned file's hash before and after, the previous content, and the first
-  load's errors and balances. A run that finds a journal validates that batch
-  against the journal's baseline (read-back and assertions) or restores the
-  previous content; if the owned file matches neither hash it touches nothing
-  and reports. Finding IDs in the ledger proves presence, not validation.
+  write the batch journal beside the staging store. It holds the complete
+  baseline the assertions need: proposal IDs, the hash of every loaded file,
+  the owned file's hash after the replace and its previous content, the first
+  load's errors, and every account's balance. A run that finds a journal
+  validates that batch against the journal's baseline, never against the
+  ledger as it now stands, or restores the previous content — also when
+  another ledger file changed in the meantime. If the owned file matches
+  neither recorded hash it touches nothing and reports.
+- **Writes are durable in order.** `fsync` the journal and its directory
+  before the rename; `fsync` the temporary file before the rename and the
+  owned file's directory after it; `fsync` after removing the journal. A
+  rename that survives a power loss while its journal does not is an
+  unvalidated batch. Finding IDs in the ledger proves presence, not validation.
 - **Idempotency on re-run.** Before each batch, find created rows by their
   `autobook-id` and matched rows by the hash in staging, verified in the
   ledger; drop both. This is what makes `apply` safely re-runnable after any
@@ -423,7 +431,8 @@ When a defect class recurs, it graduates to a gate and drops out of review scope
 - *Idempotency*: a path that can create an entry twice after a crash between
   "file replaced" and "marked applied"; an interrupted batch marked applied
   because its IDs are in the ledger, without the journal's read-back and
-  assertions; an `autobook-id` written to a matched
+  assertions, or validated against the restarted load instead of the journal's
+  baseline; a rename not ordered after a durable journal; an `autobook-id` written to a matched
   entry; a value that does not match the proposal-ID pattern treated as
   Autobook's; a missing entry silently re-created; an `apply` or `undo` that
   runs without the writer lock; an undo that removes
@@ -433,7 +442,7 @@ When a defect class recurs, it graduates to a gate and drops out of review scope
   classified as an expense rather than matched to its funding transaction (in
   `account` mode); a `match_existing` search on the target account, or one
   that picks between several candidates; a match on the amount without the
-  currency; a claim that is not per source account
+  currency, or one not re-checked against the date window at apply; a claim that is not per source account
   (the second side of a transfer unable to match, or one posting matched
   twice); a matched entry identified by file
   and line.

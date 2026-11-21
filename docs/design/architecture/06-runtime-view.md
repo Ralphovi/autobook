@@ -198,22 +198,25 @@ whole or not at all.
    present in the ledger.
 3. **Check each row.** Both accounts are open on its date; its currency is
    declared on the source account and allowed on the other; its postings are in
-   whole cents and sum to exactly zero. A row that fails is queued, and the
-   batch goes on without it.
+   whole cents and sum to exactly zero. For a matched row, the whole match
+   predicate is evaluated again: source account, amount, currency, date window
+   and claim. A row that fails is queued, and the batch goes on without it.
 4. **Render** the entries. Every posting carries an explicit amount, built from
    integer cents and printed with two decimals. The new content is the current
    owned file plus the entries.
 5. **Compare, then replace.** Hash every file again. If any differs from step
-   1, stop: exit code 4, nothing written. Otherwise write the batch journal
-   (see *Recovery*), then write a temporary file in the same directory, flush
-   it to disk, and rename it over the owned file. The journal keeps the
+   1, stop: exit code 4, nothing written. Otherwise write the batch journal and
+   make it durable (see *Recovery*), then write a temporary file in the same
+   directory, `fsync` it, rename it over the owned file, and `fsync` the
+   directory. The journal keeps the
    previous content until step 7 has passed and staging is updated.
 6. **Read back.** Load the ledger again.
    - Every **created** row's proposal ID appears exactly once, with the
      approved date, accounts and amounts.
    - A **matched** row wrote nothing, so its ID is not looked for. Its recorded
-     entry must still be present, with a posting of the row's amount and
-     currency in the row's source account.
+     entry must still be present and still satisfy the whole match predicate:
+     a posting of the row's amount and currency in the row's source account,
+     dated within the window.
 7. **Assert.**
    - The load reports no error that step 1 did not report.
    - No byte of the owned file before the appended entries changed, and no
@@ -251,11 +254,17 @@ entry, verified in the ledger.
 
 Finding a batch's IDs in the ledger proves the entries are present, not that
 the batch passed its checks. So the writer keeps a **batch journal** beside the
-staging store. It is written and flushed to disk before the rename in step 5,
-and holds: the batch and its proposal IDs, the SHA-256 of the owned file before
-and after the replace, the previous content, the errors the first load
-reported, and the source-account balances from the first load. It is removed
-only after staging is updated.
+staging store. It holds everything steps 6 and 7 compare against: the batch and
+its proposal IDs, the SHA-256 of every loaded file from step 1, the SHA-256 of
+the owned file after the replace, the owned file's previous content, the errors
+the first load reported, and the first load's balance of every account. It is
+removed only after staging is updated.
+
+**Durability.** A journal that can be lost while the rename survives is no
+journal. The order is: write the journal and `fsync` it and its directory;
+write the temporary file and `fsync` it; rename; `fsync` the owned file's
+directory. The journal's removal is likewise followed by an `fsync` of its
+directory, after staging has committed.
 
 Every `apply` and `undo` first looks for a journal, under the writer lock:
 
@@ -263,8 +272,11 @@ Every `apply` and `undo` first looks for a journal, under the writer lock:
   The journal is discarded and the batch is applied from the start.
 - It has the *after* hash: the batch was written and never validated. Steps 6
   and 7 run now, against the journal's baseline and not against the ledger as
-  it stands. If they pass, the rows are marked applied. If they fail, the
-  previous content is restored (exit 6).
+  it stands: the other files' hashes, the errors and the balances are the
+  journal's. If they pass, the rows are marked applied. If they fail — also
+  because another ledger file changed in the meantime, so that the batch can
+  no longer be validated — the previous content is restored (exit 6) and the
+  batch can be applied again.
 - It has neither: someone changed the file since. Autobook touches nothing,
   marks nothing applied and exits with code 4; `autobook status` shows the
   interrupted batch for the user to resolve.
