@@ -164,7 +164,9 @@ one does not produce an error — it produces a wrong ledger.
   `RENAME_EXCHANGE`) with a file written and flushed in the same directory,
   never a plain rename: after the exchange, hash what was swapped out, and if
   it is not the content the batch was rendered from, exchange back and write
-  nothing. A plain rename would silently overwrite a save that got in after
+  nothing. Exchanging back is checked the same way; if the file was saved
+  again in between, keep every version as a file, stop and report the
+  conflict. **Never delete a version Autobook displaced.** A plain rename would silently overwrite a save that got in after
   the last hash. No fallback to a plain rename where the exchange is
   unavailable: refuse. Beancount has no lock; against editors and
   Fava this is the guard.

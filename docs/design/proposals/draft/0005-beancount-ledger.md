@@ -698,6 +698,18 @@ either order. The swapped-out file is kept with the journal until staging is
 updated, so a write that lands on it afterwards (an editor still holding the
 old file open) is also detected and restored.
 
+**A displaced version is never deleted.** Exchanging back is itself checked:
+what the second exchange swaps out must be exactly the content the batch
+rendered. If it is not, the file was saved again in between, and Autobook stops
+resolving: it keeps every version it holds as a file beside the journal, writes
+nothing further, marks nothing applied, and exits with code 4, naming the
+files. `autobook status` shows the conflict until the user resolves it. The
+same holds for recovery. This ends the chain of "what if it was saved again"
+cases: Autobook may refuse, but it never discards a saved version.
+
+Editing the owned file while `apply` or `undo` runs is therefore not supported
+but is safe: the worst outcome is a refusal and a conflict to resolve by hand.
+
 The writer requires a file system that supports the exchange. Where it is not
 available, `apply` refuses with exit code 4 instead of falling back to a plain
 rename.
