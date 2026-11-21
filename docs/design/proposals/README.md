@@ -21,6 +21,7 @@ Start one from [`../templates/proposal.md`](../templates/proposal.md).
 | [0002](draft/0002-document-driven-booking-via-paperless.md) | Document-driven booking — statements and bills from paperless-ngx | — |
 | [0003](draft/0003-windowed-interface-and-command-line.md) | Windowed interface, user journey and command line | [#73](https://github.com/Ralphovi/autobook/issues/73) |
 | [0004](draft/0004-rules-first-mined-from-history.md) | Rules first — mined from history | [#92](https://github.com/Ralphovi/autobook/issues/92) |
+| [0005](draft/0005-beancount-ledger.md) | Autobook: OFX statements into a Beancount ledger — the whole system design; replaces 0001 and 0003 | [#100](https://github.com/Ralphovi/autobook/issues/100) |
 
 ## Accepted
 
@@ -28,9 +29,10 @@ None yet.
 
 ---
 
-Proposal 0001 is the whole system design and is deliberately still `draft`. It
-becomes `accepted` when build order step 2 — corpus export, kNN, and the backtest
-harness — has reported. That step exists precisely to test the proposal's central
+Proposal 0001 was the whole system design for GnuCash. It is replaced by
+proposal 0005 (below) and kept as a draft until 0005 is accepted. Its own
+acceptance was tied to build order step 2 — corpus export, kNN, and the backtest
+harness — reporting. That step still exists in 0005 and still tests the central
 premise: that the user's own booking history is dense and consistent enough for
 nearest-neighbour classification to abstain reliably. If it is not, the design
 changes rather than the threshold, and accepting the proposal beforehand would
@@ -40,8 +42,8 @@ Proposal 0002 amends 0001: for the rows in its *Changes to proposal 0001* table,
 0002 governs. It is accepted separately, when its own premise test — milestone
 D2, the linkage backtest — has reported.
 
-Proposal 0003 adds the command-line verbs and their contract, and GTK4 windows
-as a client of them; it amends 0001 in the rows of its *Changes to proposal
+Proposal 0003 (replaced by 0005, like 0001) adds the command-line verbs and
+their contract, and GTK4 windows as a client of them; it amends 0001 in the rows of its *Changes to proposal
 0001* table. It is accepted when the Trial window and the Review window have
 met its graduation criteria at step 9; until then the text review file is the
 only review interface.
@@ -50,6 +52,16 @@ Proposal 0004 amends 0001 the way 0002 does: the rules tier is built first and
 mined from the user's history, and kNN is judged on the residual. Its milestones
 R1 and R2 ride on 0001's steps 2 and 6, so the execution order keeps its
 sequence. It is accepted when R1, rule mining in the backtest, has reported.
+
+Proposal 0005 is a new whole-system design and is self-contained. Autobook is
+handed OFX statements and books them into a Beancount v3 plain-text ledger; the
+GnuCash book is converted once and retired; an outside driver fetches and
+converts statements. It replaces 0001 and 0003, which stay in `draft/` untouched
+and are withdrawn when 0005 is accepted. 0002 and 0004 still apply, read against
+0005, with the changes its *Relation to the other proposals* section lists. It
+is accepted when its milestones B0 (the relicensing ADR and the spikes) and B1
+(the conversion, verified against the book) have reported. The architecture
+chapters and `AGENTS.md` already describe this design.
 
 The proposals describe *what* each build step contains. The order in which the
 steps are carried out is decided in one place:

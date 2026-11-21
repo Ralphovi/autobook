@@ -1,45 +1,59 @@
 %% C4 Level 2 — Containers and their components
 %% Diagrams as code. Render with any Mermaid renderer.
 graph TB
-    subgraph launcher["Launcher (shell wrapper)"]
-        L["backup → export (read-only) → pipeline → $EDITOR → apply → save → assert → read-back → exec gnucash (always)"]
+    driver["Driver (separate project)<br/>hands over OFX files and the saved review file"]
+
+    subgraph autobook["Autobook — one process, one virtual environment"]
+        cli["Command line<br/>init · propose · pending · review-file · decide · apply · undo<br/>· status · forget · export · trial · rules (--json, exit codes 0–7)"]
+
+        subgraph inp["Input — never imports ofxstatement"]
+            ofx["OFX parser<br/>(standard library only)"]
+            adm["Admission<br/>(whole statement or nothing, balance check, overlap rule)"]
+        end
+
+        subgraph pipeline["Pipeline — never imports beancount"]
+            norm["Normaliser<br/>(profile per source account)"]
+            dedup["Dedup<br/>(bank ID | statement checksum + ordinal)"]
+            corr["Correlator<br/>(transfers incl. transfers_pending, match_existing,<br/>PayPal per paypal_mode)"]
+            docs["Bill matcher<br/>(exact amount, confirmed correspondent, batch-wide)"]
+            cls["Classifier<br/>rules → kNN → LLM (one precedence table)"]
+            adapter["Model adapter<br/>(redaction boundary, account indices,<br/>local by default)"]
+            disp["Disposition<br/>create · create_split · match_existing · out_of_scope · queue"]
+            gate["Batch gate<br/>(drift, version tuple)"]
+            review["Review file<br/>pre-marked a / ?, save = approval, strict parse"]
+            trial["Trial tooling<br/>rolling-origin backtest · rule mining · rule builder<br/>· pack validator · linkage backtest"]
+        end
+
+        staging[("Staging store<br/>SQLite by default<br/>statements · proposals · transfers_pending · preimages")]
+
+        subgraph ledgerpkg["Ledger package — the only code that imports beancount (src/autobook/book/ today)"]
+            reader["Reader<br/>accounts · corpus · existing entries with content hashes<br/>· root-name options · SHA-256 of every file · load errors"]
+            writer["Writer<br/>init · apply: check rows, render, compare, atomic replace,<br/>read back, assert, restore on failure · undo"]
+        end
     end
 
-    subgraph pipeline["Pipeline process — venv, never imports gnucash"]
-        src["Statement source<br/>paperless | files"]
-        plug["ofxstatement plugins"]
-        norm["Normaliser<br/>(profile per source account)"]
-        dedup["Admission & dedup<br/>(FITID | checksum+ordinal, balance check)"]
-        corr["Correlator<br/>(transfers incl. transfers_pending, PayPal per paypal_mode)"]
-        docs["Bill matcher<br/>(exact amount, confirmed correspondent, batch-wide)"]
-        cls["Classifier<br/>rules → kNN → LLM (one precedence table)"]
-        adapter["Model adapter<br/>(redaction boundary, account indices,<br/>local by default)"]
-        disp["Disposition<br/>create · create_split · match_existing · out_of_scope · queue"]
-        gate["Batch gate<br/>(drift, version tuple)"]
-        review["Review file<br/>pre-marked a / ?, save = approval, strict parse"]
-        trial["Trial tooling<br/>rolling-origin backtest · rule builder · assistant detector<br/>· pack validator · linkage backtest"]
-        staging[("Staging store<br/>SQLite | PostgreSQL")]
+    subgraph files["Ledger files"]
+        main["Main file and its includes<br/>(the user's; read only)"]
+        owned["Owned file<br/>(transactions with autobook-id; append, exact removal on undo)"]
     end
 
-    subgraph book["Book process — system Python, links libgnucash (exporter + applier)"]
-        session["Session manager<br/>(NORMAL_OPEN | READ_ONLY, save, end in finally)"]
-        export["Exporter (read-only)<br/>corpus · CoA · existing · SX definitions"]
-        apply["Applier<br/>create · split · match_existing · doc link · read-back"]
-        assert["Post-apply assertions<br/>(engine API)"]
-    end
-
-    src --> plug --> norm --> dedup --> corr --> docs --> cls --> disp --> gate --> staging
+    driver --> cli
+    cli --> ofx
+    ofx --> adm --> norm --> dedup --> corr --> docs --> cls --> disp --> gate --> staging
     cls --> adapter
     staging --> review
     review --> staging
     trial --> staging
-    export -->|"JSON"| trial
-    export -->|"JSON"| cls
-    export -->|"JSON: existing, SX definitions"| corr
-    staging -->|"JSON: approved rows"| apply
-    apply -->|"JSON: proposal_id, tx_guid, status"| staging
-    session --- export
-    session --- apply
-    session --- assert
-    L --> pipeline
-    L --> book
+    reader -->|"coa"| adm
+    reader -->|"coa"| cls
+    reader -->|"coa"| review
+    reader -->|"corpus"| cls
+    reader -->|"corpus"| trial
+    reader -->|"existing"| corr
+    staging -->|"apply-in: approved rows"| writer
+    writer -->|"apply-out: proposal_id, entry, status;<br/>assertion results"| staging
+    writer -->|"read-back and assertions"| reader
+    reader -->|"loads every file"| main
+    reader -->|"loads"| owned
+    writer -->|"writes transactions only"| owned
+    main -.->|"include"| owned

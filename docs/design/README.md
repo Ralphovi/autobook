@@ -20,20 +20,19 @@ expected to keep changing.
 | 2. Proposals | [`proposals/`](proposals/README.md) | The change process | `draft/` → `accepted/`; accepted records are immutable |
 | 3. Architecture overview | [`architecture/`](architecture/README.md) | Descriptive, living | Edited continuously; always describes the current system |
 
-Autobook has **no specification class**. Wyrd, whose documentation structure this
-borrows, needs one because its on-disk format must outlive the software that
-wrote it. Autobook writes through GnuCash's engine API and owns no persistent
-format that another implementation must conform to — the staging table is
-internal and disposable, and the book format belongs to GnuCash. If a shareable
-rule-pack format ever needs a compatibility contract, that is the point to add
-the class back, not before.
+Autobook has **no specification yet**. The class exists (ADR-0004) for formats
+that must outlive the software that wrote them. Under proposal 0005 Autobook
+writes entries into a plain-text ledger that the user, Beancount and Fava also
+read, and its own undo depends on their exact form. That format gets the first
+specification when the ledger writer is built. The staging table stays internal
+and disposable. A shareable rule-pack format would be the second candidate.
 
 ### 1. Decision records (`adr/`)
 
 Short, numbered, immutable records of *why* a decision was made, in
 [Nygard](https://cognitect.com/blog/2011/11/15/documenting-architecture-decisions)
-style. They exist so the same debate — "why not piecash?", "why kNN rather than
-GnuCash's Bayes matcher?" — is not reopened in every new issue. An ADR is never
+style. They exist so the same debate — "why GPL-2.0-or-later?", "why not let
+the classifier always answer?" — is not reopened in every new issue. An ADR is never
 edited after acceptance; it is superseded by a later ADR that references it.
 
 Start one from [`templates/adr.md`](templates/adr.md) and add a row to the
@@ -45,12 +44,16 @@ How design change flows. A proposal carries motivation, design, alternatives, an
 graduation criteria, and moves from `draft/` to `accepted/`. Modelled on
 Kubernetes KEPs and Rust RFCs, kept deliberately lightweight.
 
-The whole system design is [proposal 0001](proposals/draft/0001-gnucash-auto-booking-pipeline.md),
-amended by [proposal 0002](proposals/draft/0002-document-driven-booking-via-paperless.md)
-(statements and bills from paperless-ngx). For the rows in 0002's *Changes to
-proposal 0001* table, 0002 governs.
-[Proposal 0003](proposals/draft/0003-windowed-interface-and-command-line.md)
-adds the command line's verbs and contract and GTK4 windows as their client. The order in which the build steps are
+The whole system design is [proposal 0005](proposals/draft/0005-beancount-ledger.md):
+OFX statements into a Beancount ledger.
+[Proposal 0002](proposals/draft/0002-document-driven-booking-via-paperless.md)
+(bills from paperless-ngx) and
+[proposal 0004](proposals/draft/0004-rules-first-mined-from-history.md) (rules
+first, mined from history) apply with the changes 0005 lists.
+[Proposal 0001](proposals/draft/0001-gnucash-auto-booking-pipeline.md) and
+[proposal 0003](proposals/draft/0003-windowed-interface-and-command-line.md)
+describe the earlier GnuCash design; 0005 replaces them, and they are withdrawn
+when it is accepted. The order in which the build steps are
 carried out is decided in
 [architecture section 9](architecture/09-build-order-and-roadmap.md), not in
 the proposals.
@@ -64,8 +67,8 @@ The living description of the system as it currently is — trimmed
 code. "Update the architecture doc" is a legitimate merge requirement on a PR
 that changes structure, not a follow-up.
 
-Until the first code lands it describes the system as designed in proposals 0001
-and 0002, and says so in every section; from then on it follows the code. See
+Where code does not exist yet it describes the system as designed in proposal
+0005, with 0002 and 0004, and says so; where code exists it follows the code. See
 the [architecture index](architecture/README.md) for why this changed.
 
 Start a section from [`templates/architecture.md`](templates/architecture.md).
@@ -90,8 +93,9 @@ Start a section from [`templates/architecture.md`](templates/architecture.md).
    — what this is, the guarantee, the quality goals.
 2. [`architecture/05-building-block-view.md`](architecture/05-building-block-view.md)
    — the processes, components and contracts.
-3. [Proposal 0001](proposals/draft/0001-gnucash-auto-booking-pipeline.md) and
+3. [Proposal 0005](proposals/draft/0005-beancount-ledger.md), then
    [proposal 0002](proposals/draft/0002-document-driven-booking-via-paperless.md)
+   and [proposal 0004](proposals/draft/0004-rules-first-mined-from-history.md)
    — the full reasoning, alternatives, and what each build step contains. The
    execution order is
    [architecture section 9](architecture/09-build-order-and-roadmap.md).

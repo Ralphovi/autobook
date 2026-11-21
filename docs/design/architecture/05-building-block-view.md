@@ -9,63 +9,91 @@ tags:
 # 5. Building block view
 
 > Living document. Describes the designed decomposition and the package layout
-> that implements it (below). Diagram source:
-> [`diagrams/c4-container.mermaid`](diagrams/c4-container.mermaid).
+> that implements it (below). The design is
+> [proposal 0005](../proposals/draft/0005-beancount-ledger.md): Autobook is handed
+> OFX statement files and books them into a Beancount v3 plain-text ledger.
+> Diagram source: [`diagrams/c4-container.mermaid`](diagrams/c4-container.mermaid).
 
 ### Package layout
 
 All under `src/autobook/`, one module per building block. Each stub module sets
 `__all__` to the one name of its entry point; a block that has been built
-(`normaliser`) exports its real API instead.
+(`normaliser`, `classifier`, `trial`, `contracts`) exports its real API instead.
 
 | Path | Block |
 |------|-------|
-| `contracts.py` | The versioned JSON contracts (section 5.1). Standard library only. |
-| `staging.py` | The staging store (section 5.1). Its own top-level block, because both processes use it. Standard library only. |
-| `pipeline/` | `statement_source`, `admission`, `normaliser`, `correlator`, `bill_matcher`, `classifier`, `model_adapter`, `disposition`, `batch_gate`, `review_file`, `trial` (section 5.2). Never imports `gnucash`. `pipeline/profiles/` is package data, not a block: the normaliser's shipped profiles. |
-| `book/` | `session`, `exporter`, `applier`, `readback`, `assertions`, `undo` (section 5.3). The only package that may import `gnucash`, per file, as each module needs it. |
+| `contracts.py` | The versioned contracts (section 5.1). Standard library only. |
+| `staging.py` | The staging store (section 5.1). Its own top-level block, because both the pipeline and the ledger package use it. Standard library only. |
+| `pipeline/` | `statement_source`, `admission`, `normaliser`, `correlator`, `bill_matcher`, `classifier`, `model_adapter`, `disposition`, `batch_gate`, `review_file`, `trial` (section 5.2). Never imports `beancount`. `pipeline/profiles/` is package data, not a block: the normaliser's shipped profiles. |
+| `book/` | The **ledger package** (section 5.3): reader, writer, read-back, assertions, undo. The only package that may import `beancount`. The directory name is historical: it dates from the earlier design, which booked into a GnuCash book. |
 
-The launcher (section 5.4) is a shell script, not a Python module. The client
-(section 5.5, proposal 0003) has no package yet; it lands with build step 9. `import
-autobook` does not import the subpackages.
+The modules under `book/` are still the stubs of that earlier design today
+(`session`, `exporter`, `applier`, `readback`, `assertions`, `undo`). They are
+replaced by the components of section 5.3 when the ledger package is built
+(proposal 0005, *Backward compatibility*).
 
-## 5.1 Three processes and one store
+There is no launcher script: sequencing a run is the driver's job, and the
+driver is a separate project (section 5.4). The `autobook` command (section 5.5)
+has no module yet; the only command that exists today is
+`python -m autobook.pipeline.trial backtest`. `import autobook` does not import
+the subpackages.
 
-| Block | Runs as | May link libgnucash | Purpose |
-|-------|---------|---------------------|---------|
-| **Pipeline** | Python in a virtualenv | **No — enforced by the gate** | Everything from statement to approved proposal |
-| **Book process** | System Python (`python3-gnucash` in `dist-packages`) | Yes, and nothing else does | Every read from and write to a book, in two parts: the **exporter** (read-only, from build step 2) and the **applier** (writes, from build step 5) |
-| **Launcher** | Shell wrapper around `gnucash` | No | Sequencing: backup, read-only export, pipeline, review, apply, assert, open GnuCash |
-| **Client** (proposal 0003, draft) | GTK4 windows; Python with PyGObject | No, and it does not import the pipeline either | Runs `autobook` subcommands with `--json` and renders them; edits the review file; never a second approval path (section 5.5) |
-| **Staging store** | SQLite in `$XDG_DATA_HOME` (default) or a PostgreSQL URI | — | Audit trail, correction corpus, undo list; the seam between classification and writing |
+## 5.1 One process and one store
 
-The split between pipeline and book process is load-bearing (proposal 0001,
-*Why the boundary matters*): it keeps the pipeline testable with no GnuCash
-installed and no book present, sidesteps the `dist-packages` virtualenv problem,
-and makes a future Windows port a component swap.
+Autobook is one program and runs as one process. It has four parts and is
+called by a program outside it.
 
-The ban on importing `gnucash` applies to the **pipeline**. It is lifted for the
-whole book process, exporter and applier alike. The `nox -s applier` session and
-the pytest `applier` marker keep that name (renaming code is out of scope) but
-cover every book-process test.
+| Block | Where | May import `beancount` | Purpose |
+|-------|-------|------------------------|---------|
+| **Input** | `pipeline/statement_source`, `pipeline/admission` | No | Parse the OFX files it is handed; admit each statement whole or not at all |
+| **Pipeline** | the rest of `pipeline/` | **No — enforced by the linter** | Everything from admitted statement to approved proposal: normalise, dedup, correlate, classify, dispose, batch gate, stage, review file |
+| **Staging store** | `staging.py`; SQLite in `$XDG_DATA_HOME` (default) or a PostgreSQL URI | No | Audit trail, correction corpus, undo list; the seam between classification and writing |
+| **Ledger package** | `book/` | Yes, and nothing else does | Every read from and write to the ledger, in two parts: the **reader** (accounts, corpus, existing entries) and the **writer** (append, read back, assert, undo) |
+| **Driver** (outside Autobook) | a separate project | — | Gets statements, converts them to OFX, decides when to run, calls Autobook's commands, opens the review file in an editor, notifies the user (section 5.4) |
+
+Terms used throughout this chapter:
+
+- A **statement** is one OFX file; a **line** is one transaction in it.
+- The **ledger** is the user's Beancount ledger: a main file and the files it
+  includes.
+- The **owned file** is the one ledger file Autobook writes to. It is named in
+  the configuration, created by `autobook init`, and included from the user's
+  main file by a line the user adds.
+- The **proposal ID** is `AB-` followed by a ULID, generated once per staged
+  line. An entry Autobook creates carries it as `autobook-id` metadata.
+
+**The import rule.** Only the ledger package imports `beancount`, per file, as
+each module needs it; the linter enforces this. Nothing in Autobook imports
+`ofxstatement` or `gnucash`. Everything else reaches the ledger through the
+typed contracts below. This is what keeps input, pipeline and staging testable
+against fixtures, with no ledger on disk (proposal 0005 §3).
+
+There is no second process. The earlier design needed one because the GnuCash
+bindings could not be installed into a virtual environment. Beancount is an
+ordinary dependency with wheels, so the ledger package is tested like the rest:
+in `nox -s gate`, against synthetic ledgers in temporary directories, on every
+supported Python version, with no Docker image. The Docker test environment
+keeps paperless. Its GnuCash image, with the `nox -s applier` session and the
+pytest `applier` marker, stays only for the export half of the one-off
+conversion from GnuCash and is removed with it (proposal 0005 §16, *Tests*).
 
 ### The JSON contracts
 
-All communication between pipeline and book process is JSON on stdin/stdout or
-in files under the staging directory. Each contract is versioned; widening one is
-a documented change that updates this section in the same PR.
+The ledger package and the rest of Autobook exchange typed contract objects, in
+process. Each contract serialises to JSON, for test fixtures, for `--json`
+output and for `autobook export`. Each contract is versioned; widening one is a
+documented change that updates this section in the same PR.
 
-Wire shape, implemented in `autobook.contracts`:
+Wire shape, implemented in `autobook.contracts` for `corpus` and `coa`:
 
 - Every document is a JSON object with its `contract` name (`"corpus"`,
   `"coa"`) and an integer `version`, starting at `1`. A reader accepts only a
   name and version it knows, and rejects anything else with `ContractError`.
 - Money is a plain integer of cents. A float or a boolean is rejected.
-- An account is a **list of path components**, root account excluded, never a
-  separator-joined string. GnuCash takes the account separator from a user
-  preference outside the book (`.` in a headless session, often `:` on a
-  desktop), so a joined string would mean different things on different
-  machines. Nothing in the contracts joins or splits a path.
+- An account is a **list of path components**, never a separator-joined string
+  (`["Ausgaben", "Lebensmittel"]`, not `"Ausgaben:Lebensmittel"`). Nothing in
+  the contracts joins or splits a path. Ledger text and the review file write
+  the components joined by `:`; a contract never does.
 - A missing or unknown field is rejected, as is a value outside a closed set.
 - The same checks run when a contract object is built in Python, so a writer
   cannot serialise a document a reader would refuse (for example a bare string
@@ -76,61 +104,112 @@ Wire shape, implemented in `autobook.contracts`:
   `source_account`, `destination_account`, `post_date` (`YYYY-MM-DD`) and
   `provenance`. `sign` is `"out"` when the money leaves `source_account` and
   `"in"` when it enters it; the kNN index is keyed by `(source_account, sign)`.
-  `provenance` is always `"observed"`: the contract refuses `corrected`.
-- `coa` is `{"contract", "version", "accounts"}`. An account has `path`, `type`
-  (one of GnuCash's account-type names, exact case: `NONE`, `BANK`, `CASH`,
-  `CREDIT`, `ASSET`, `LIABILITY`, `STOCK`, `MUTUAL`, `CURRENCY`, `INCOME`,
-  `EXPENSE`, `EQUITY`, `RECEIVABLE`, `PAYABLE`, `ROOT`, `TRADING`, `CHECKING`,
-  `SAVINGS`, `MONEYMRKT`, `CREDITLINE`), `placeholder`, `commodity`
-  (`{"namespace", "mnemonic"}`) and `fraction` (an integer greater than zero).
+  `provenance` is always `"observed"`: the contract refuses `corrected`. This
+  design does not change the `corpus` contract.
+- `coa` is `{"contract", "version", "accounts"}`. **The implemented version 1
+  still has the fields of the earlier GnuCash design**: `path`, `type` (one of
+  GnuCash's account-type names, such as `BANK` or `EXPENSE`), `placeholder`,
+  `commodity` (`{"namespace", "mnemonic"}`) and `fraction` (an integer greater
+  than zero). None of these but `path` exists in a Beancount ledger. Under this
+  design `coa` gets a new version with the fields in the table below; the code
+  and its tests change when the reader is built.
 
-| Contract | Direction | Carries |
-|----------|-----------|---------|
-| `corpus` | book → pipeline | Two-split transactions: `(normalised-able raw memo, amount_cents, sign, source_account, destination_account, post_date)`, every one with provenance `observed`. Read-only session. `corrected` rows never come from the book; the pipeline adds them from staging. |
-| `coa` | book → pipeline | The live account tree: paths (component lists), types, placeholder flags, commodities and their fractions. |
-| `existing` | book → pipeline | Autobook IDs already present in `num` (idempotency); per source account the transactions in a date window, for the `match_existing` search; and the **scheduled-transaction (SX) definitions** — template accounts, amounts, recurrence — so the pipeline can tell when a row falls on an SX occurrence. Read-only session. |
-| `apply-in` | pipeline → book | Approved rows: `proposal_id`, disposition, source and destination (or split specification), `amount_cents`, the source account's commodity, date, description, optional `doc_link`, optional `match_guid`. |
-| `apply-out` | book → pipeline | Per row `{proposal_id, tx_guid, status}`, where `applied` is reported only after a read-back has found the transaction; per batch the assertion results. |
+| Contract | Direction | Carries | State |
+|----------|-----------|---------|-------|
+| `corpus` | ledger package → pipeline | One row per historical transaction with exactly two postings, one of them in a configured source account, both in the same currency, neither with a cost or a price: `(raw memo, amount_cents, sign, source_account, destination_account, post_date)`, every one with provenance `observed`. `corrected` rows never come from the ledger; the pipeline adds them from staging. | Implemented, version 1, unchanged |
+| `coa` | ledger package → pipeline | The live account list. Per account: the path (a component list); the root category (`assets`, `liabilities`, `equity`, `income`, `expenses`, whatever the ledger's root names are); the date of its `open` directive; the date of its `close` directive, or null; the currencies its `open` directive allows (empty means any). | Designed. The implemented version 1 has the GnuCash-shaped fields above |
+| `existing` | ledger package → pipeline | Autobook IDs found in the ledger, each with its file and line and the entry as loaded (idempotency). Per source account, the match candidates in a date window, each with its **content hash**, for the `match_existing` search. The ledger's root-name options. Every loaded file with its SHA-256. The errors the load reported. | Designed, not implemented |
+| `apply-in` | pipeline → ledger package | Approved rows: `proposal_id`, disposition, source and destination accounts (or split specification), `amount_cents`, currency, date, narration, optional document URL, optional match hash. | Designed, not implemented |
+| `apply-out` | ledger package → pipeline | Per row `{proposal_id, entry, status}`, where `applied` is reported only after the read-back and every assertion have passed; per batch the assertion results. | Designed, not implemented |
 
-The `match_existing` search runs in the pipeline, over the `existing` export, so
-that a row can be queued as awaiting a scheduled transaction or a pending
-transfer and the review file can show the match. The applier re-checks the
-matched GUID inside its write session before touching it. This settles the
-earlier open question of whether `existing` is a separate call: the SX
-definitions and the transfer search before classification both need it before
-the pipeline runs.
+A **content hash** identifies an entry the user wrote by hand, which has no
+permanent identifier: its file and line move whenever anything above it is
+edited. The hash covers date, flag, payee, narration, tags, links and postings,
+and excludes metadata and position (Beancount's `hash_entry` with
+`exclude_meta=True`; proposal 0005 §8.2).
+
+The `match_existing` search runs in the pipeline, over the `existing` contract,
+so that a row can be queued as a pending transfer and the review file can show
+the match. Nothing is ever written to a matched entry, so apply has no write to
+guard there: its filter step drops matched rows whose validated `applied_entry`
+is still present in the ledger; a row with only a proposed `matched_entry` goes
+on to be checked (section 5.3). `existing` is needed before the
+pipeline runs, because the transfer search comes before classification.
 
 ## 5.2 Pipeline components
 
 ### Statement source
 
-An interface with two first-class implementations: **paperless** (proposal 0002
-§3) and **files**. Both yield `(original bytes, checksum, source_account, plugin)` to the
-same admission path, so the plugins cannot tell where a statement came from. The
-paperless source resolves statements through an explicit mapping of
-correspondent and document type to source account; unmapped statements are
-reported, never guessed.
+Autobook's input is **OFX files handed over by the driver**: `autobook propose
+FILE…` takes one or more. Autobook never fetches a statement, never runs a
+converter and never imports or runs ofxstatement; discovering and downloading
+statements from paperless or a bank, and converting them to OFX, is the driver's
+job (section 5.4).
+
+- **The parser is Autobook's own**, standard library only. From each file it
+  reads the account ID, the currency, the statement period and the ledger
+  balance, and per line the ID, date, amount, name and memo.
+- **The memo must arrive unmodified.** Normalisation is Autobook's (the
+  normaliser, below), never the converter's.
+- The driver may pass a **producer string** per file, for example the converter
+  plugin's name and version. It is recorded with the statement and is part of
+  the version tuple (section 8.3): a changed producer string means a converter
+  was updated, which can change every memo without any Autobook code changing.
+- The **configuration** binds a file to the ledger. Per source it names the OFX
+  account ID, the ledger account (the *source account*), whether the line IDs
+  are bank-supplied or synthesised, the normalisation profile, and `paypal_mode`
+  where relevant (proposal 0005 §4.5). Autobook cannot learn any of these from
+  the file. Today the implemented normaliser reads its account-to-profile
+  mapping from its own `accounts.toml` (below).
+
+Autobook does not second-guess a well-formed statement. It cannot know how an
+OFX file was produced; it checks the file for consistency and its own work for
+correctness.
+
+**[OPEN]** whether OFX files and a producer string are enough, or whether
+`propose` should also take the checksum of the original statement, so that a
+statement converted twice is recognised (proposal 0005, *Open questions*).
 
 ### Admission and dedup
 
-Runs the mapped ofxstatement plugin, applies the **balance check** where the
-format has balances, and assigns row keys. Every key includes `source_account`.
-Each plugin declares whether its `id` is bank-supplied. A bank-supplied FITID
-is the key where present; otherwise — including IDs a plugin synthesises, such
-as ofxstatement's hash of date, memo and amount — the key is
-`(source_account, original_checksum, line_ordinal)` plus the period-overlap
-rule. The overlap rule's line matching is **count-aware**: two identical lines
-in the overlap need two identical staged lines.
+**Admission** is the decision to accept a statement. A statement is **admitted
+whole or not at all** (proposal 0005 §5). It is rejected, with the reason
+recorded and no line staged, if:
 
-Every statement gets a `statements` row, from paperless or from a file (the
-checksum is the file's), so both paths can be compared row for row. For a
-paperless statement, admission records the document version and fetches the
-original with `?version=`. A statement that fails admission is rejected whole
-and recorded with status `rejected` and its reason; other statements proceed.
+- the file does not parse as OFX;
+- a line lacks a date, an amount or a currency, or an amount is not a whole
+  number of cents;
+- the account ID is not in the configuration;
+- the statement's currency is not one the ledger account's `open` directive
+  declares;
+- the lines do not add up to the statement's balances, where it states them
+  (the **balance check**);
+- its period overlaps an admitted statement in a way the overlap rule cannot
+  resolve (proposal 0002 §3.4).
 
-**[OPEN]** until D0: whether statements arrive as PDFs or as the CSV/OFX exports
-the plugins read today (proposal 0002, *Open questions*). PDF parsing is not a
-settled part of this design.
+Every statement gets a `statements` row, keyed by the checksum of the OFX file,
+so handing over a file that was already **admitted** changes nothing. A
+statement that fails admission is recorded with status `rejected` and its
+reason, and is checked again from the start when it is handed over again: a
+rejection for a reason outside the file (an account ID missing from the
+configuration) must not block the file for good. `propose` exits
+with code 7 and reports the reason per file. Other statements in the same call
+are admitted on their own merits.
+
+Where a statement states no balances, the balance check is not possible, and
+coverage reports show which accounts are protected by it and which are not
+(proposal 0002 §3.3). **[OPEN]**: the staging schema of proposal 0005 §11 has no
+column for this; the balances themselves are `NULL` when absent.
+
+**Dedup** assigns each line its key. Every key includes `source_account`. The
+configuration says, per source, whether the line IDs are bank-supplied. A
+bank-supplied ID is the key where present. Otherwise the ID was synthesised by
+the converter (ofxstatement hashes date, memo and amount, so two identical card
+payments on one day collide) and is not trusted as an identity: the key is
+`(source_account, statement checksum, line ordinal)`, and the period-overlap
+rule decides whether a later statement repeats the line. The overlap rule's line
+matching is **count-aware**: two identical lines in the overlap need two
+identical staged lines.
 
 ### Normaliser
 
@@ -263,7 +342,7 @@ Unicode version gives a new one.
 
 The version is global on purpose: a change for one account changes it for every
 account. That costs nothing extra, because the kNN index is rebuilt whole every run
-(proposal 0001); the cost is a backtest re-run, which is what the version gate
+(proposal 0005 §6.2); the cost is a backtest re-run, which is what the version gate
 forces. This string, not `NORMALISER_VERSION` alone, is the normaliser version that
 is recorded with every vector, in the version tuple (section 8.3) and in the
 `normaliser_version` staging column; the integer alone would miss a user's profile
@@ -271,22 +350,21 @@ edit (section 8.8).
 
 ### Correlator
 
-The only component with a cross-account view. Pairs the two sides of transfers
-between the user's own accounts and emits the transfer from one canonical side.
-Without it every transfer is booked twice.
+The only pipeline component with a cross-account view, which staging gives it.
+Pairs the two sides of transfers between the user's own accounts and emits the
+transfer from one canonical side. Without it every transfer is booked twice.
 
 Transfers also span batches. Every transfer row first goes through a
 `match_existing` search in its **source** account, before classification: the
-second side of a transfer booked in an earlier batch resolves to the transaction
-the first side created, which has splits in both accounts. A transfer booked
+second side of a transfer booked in an earlier batch resolves to the entry the
+first side created, which has a posting in both accounts. A transfer booked
 from one side records a `transfers_pending` entry (counterpart account, amount,
-date window, the first side's proposal ID and transaction GUID). An unmatched
-second side whose counterpart is pending is queued as "pending transfer", never
-classified.
+date window, the first side's proposal ID). An unmatched second side whose
+counterpart is pending is queued as "pending transfer", never classified.
 
 PayPal follows the configuration key `paypal_mode`:
 
-- `account` (default): PayPal is its own GnuCash account and its statement is
+- `account` (default): PayPal is its own ledger account and its statement is
   imported. Bank lines to PayPal are transfers, resolved here.
 - `pass_through`: PayPal statements are never imported. The bank line is
   classified by the merchant parsed from its memo (`PAYPAL .VENDORX` →
@@ -300,21 +378,30 @@ correspondent association** between the bill's correspondent and the row's
 merchant token (proposal 0002 §4.4). Candidate bills are first deduplicated by
 `original_checksum`, because paperless accepts duplicate documents by default; a
 link exists only when the remaining pairing is one-to-one. It changes no amount,
-date or account. Its only downstream effect is to make document conditions
-(correspondent, document type, tag) available to rules, and a `doc_link`
-available to the applier.
+date or account. Its only downstream effects are to make document conditions
+(correspondent, document type, tag) available to rules, and a document URL
+available to the writer: a created entry with a linked bill carries it as
+`autobook-doc` metadata. On a `match_existing` row nothing is written to the
+ledger, and the link is recorded in staging only.
 
 A bill without a correspondent, or whose correspondent has no confirmed association, can only produce `doc_match = weak`: a hint line
 in the review file, never input to a rule. Which paperless document types count
 as bills and which as credit notes is configuration, and part of the version
 tuple.
 
+This is the one place where Autobook still talks to paperless. Statements no
+longer come from there (they are the driver's), but bills do. Whether the driver
+should hand over bill candidates in a file instead is **[OPEN]** (proposal 0005,
+*Open questions*). The paperless client uses the standard library or an HTTP
+library whose licence is compatible with GPLv2
+([ADR-0005](../adr/0005-relicense-gpl-2-or-later.md), status Proposed).
+
 ### Classifier
 
 The cascade runs **rules → kNN → LLM** (k-nearest-neighbour, then a large
 language model). Precedence is one table, which governs everywhere. It is
-stated in full in proposal 0002 §5.1 (document conditions); proposal 0001's
-*Rules* section points to it. In short:
+stated in full in proposal 0002 §5.1 (document conditions); proposal 0005 §6
+points to it. In short:
 
 | Tier | Source | Condition |
 |------|--------|-----------|
@@ -422,11 +509,15 @@ builder reports conflicts between any two tiers on historical rows.
     every run and never persisted, so it has no version of its own yet; that
     arrives with the version tuple.
 - **LLM tail.** Through the model adapter only. The label space is the live
-  account list, minus placeholder accounts and Equity and Trading account types;
-  output outside it is rejected. Temperature is pinned to 0, and the model ID is
-  recorded in the version tuple. An LLM proposal is always `?` until shadow mode
-  has measured per-method precision for `method=llm`; only then may a threshold
-  pre-mark LLM rows. Optional.
+  account list, generated from the ledger at run time (the `coa` contract) and
+  never written into the steering document. The answer is validated against it:
+  output outside it is rejected, and so are accounts not open on the line's
+  date, accounts whose `open` directive does not allow the line's currency, and
+  accounts under the Equity root. Temperature is pinned to 0, and the model ID
+  is recorded in the version tuple. An LLM proposal is always `?` until shadow
+  mode has measured per-method precision for `method=llm`; only then may a
+  threshold pre-mark LLM rows. Optional: running with no language model at all
+  is a first-class configuration.
 
 A row nothing accepts goes to `queue`. kNN and the LLM return a single account,
 never a split.
@@ -442,6 +533,8 @@ cannot be handed a raw memo, an IBAN or document content by its type signature.
 The account list is sent as **numeric indices**, mapped back to accounts
 locally; account names never cross. OpenAI-compatible with a configurable
 `base_url`; credentials from the Secret Service. Absent entirely in no-AI mode.
+Like the paperless client, it uses the standard library or an HTTP library whose
+licence is compatible with GPLv2 (ADR-0005, status Proposed).
 
 The default backend is **local** (Ollama, llama.cpp …). A remote backend is
 opt-in, and then receives a token only when it matches a rule-pack entry or the
@@ -450,45 +543,82 @@ row is queued.
 
 ### Disposition
 
-Assigns each row one of `create | create_split | match_existing | out_of_scope |
-queue`. Out-of-scope rows (securities, split-currency) are recorded and visible
-but excluded from the queue and from coverage and drift metrics.
+Assigns each row exactly one of `create | create_split | match_existing |
+out_of_scope | queue`. Out-of-scope rows (securities transactions, postings in a
+currency other than the account's) are recorded and visible but excluded from
+the queue and from coverage and drift metrics.
 
-A row in a source account whose amount and date (± the match window) fall on an
-SX occurrence is **never `create`**: it is `match_existing` if GnuCash has
-created the instance, otherwise `queue` with the reason "awaiting scheduled
-transaction", which resolves on a later run. `match_existing` searches the
-row's **source** account (an SX transaction may have many splits), among
-transactions not already claimed by Autobook — no Autobook ID in `num` and no
-GUID in staging's `applied_tx_guid`. Whether a candidate is reconciled does not
-matter.
+**`queue`** means the row is shown for review as `?`, neither booked nor lost,
+and counted as outstanding in the balance check. A queued row carries its
+reason: confidence under threshold; no rule and a kNN distance over the cutoff;
+the proposed account not open on the line's date; a currency the account does
+not allow; an ambiguous match; a pending transfer. A payment whose parts change
+every period (a loan instalment's interest and principal) cannot be split from
+the statement line and is queued. If the user writes that entry by hand, the
+line resolves as `match_existing`.
+
+**`match_existing`** means the line is already in the ledger: the user wrote it
+by hand, or it is the second side of a transfer. The search looks in the row's
+**source** account for a posting with the same amount and the same currency within ±5 days, among
+entries not already claimed for that source account. An entry is *claimed for a
+source account* when a staged row of that account created it or matched it;
+another pending, approved or applied row of that account refers to the entry (a row never excludes its own candidate; a rejected or skipped row releases its claim) through `matched_entry` from proposal on, and through
+`applied_entry` once validated; both count, so two pending rows cannot claim the
+same entry. An `autobook-id` alone does
+not exclude an entry: the first side of a transfer creates an entry that is
+claimed for its own account only, so the second side's search in the other
+account finds it and matches it once. Whether the user has asserted a balance since does not matter.
+One candidate: nothing is created, and staging records in `matched_entry` the matched entry's
+`autobook-id` if it has one, otherwise its content hash (section 5.1). No candidate or more than one: the row is queued. The search
+never guesses.
+
+Nothing is written to a matched entry; it is in a file Autobook does not own.
+If the user later edits a matched hand-written entry, its hash changes and the
+staged row no longer finds its entry. The claim is not dropped: it becomes an
+*orphaned claim*. While it exists, matching is paused for that whole source
+account: every line that would match there is queued ("a matched entry
+changed"), because Autobook cannot tell which entry the edited one is. `autobook status` lists orphaned claims, and the orphaned row returns
+to the review file as `?` for the user to point at its entry again (proposal
+0005 §8.2).
 
 ### Batch gate
 
 Decides whether anything is written at all: coverage below a rolling baseline,
-LLM-fallback spike, unusual share of rarely used accounts, parse errors above a
-small count, a changed version tuple, paperless unreachable. Any of these writes
-nothing and notifies; the launcher still opens GnuCash.
+LLM-fallback spike, unusual share of rarely used accounts, a changed version
+tuple, paperless unreachable. Any of these writes nothing; the command exits
+with code 3 and the reason, and notifying the user is the driver's job. The
+ledger is a text file and stays usable. Proposals stay pending.
+
+A file that does not parse is no longer a batch-gate matter: the statement is
+rejected whole at admission (exit code 7).
 
 ### Review file
 
-Generates a `git rebase -i`-style text file at
-`$XDG_RUNTIME_DIR/autobook/review.txt` (mode `0600`, removed in `finally`)
-listing the batch's in-scope rows. Rows that passed the gates
-are pre-marked `a` (accept); everything else is `?`. **Saving the file is the
-user's approval of every row marked `a` in the saved file**, with the account,
-amount and date shown. Nothing else reaches the book.
+Generates a `git rebase -i`-style text file listing the batch's in-scope rows.
+`autobook review-file` writes it to standard output; the driver decides where
+it lives and opens the editor. The file holds counterparty names, so it should
+be private to the user and short-lived. Each row has a status: `a` accept, `?`
+needs a decision, `s` skip, `x` reject (recorded as a negative example). Rows
+that passed the gates are pre-marked `a`; everything else is `?`. **Saving the
+file is the user's approval of every row marked `a` in the saved file**, with
+the account, amount, currency and date shown. Every row shows its currency.
+Nothing else reaches the ledger.
 
 The file is parsed back **by ID, never by position**, strictly: an unknown ID,
-status character, account or an amount change aborts the whole parse with a
-line number. A row with a weak bill match carries a hint line, nothing more.
-Corrections are recorded as `corrected` corpus rows. Until the
-applier exists (build step 5), saving the file records the decisions to staging
-and writes nothing.
+an unknown status character, an account that is not open in the ledger or an
+amount or currency that differs from staging aborts the whole parse with a line number. A split row's posting lines, the source posting first, carry the row's ID and a posting number; destination accounts may be changed and are checked against the live chart of accounts, amounts may not
+(exit code 5) and applies nothing. A row with a weak bill match carries a hint
+line, nothing more. What was proposed and what was saved are both recorded per
+row; corrections are recorded as `corrected` corpus rows. `autobook decide`
+records the decisions to staging and writes nothing to the ledger; until the
+writer exists (build step 5) that is all saving the file can do.
 
 ### Trial tooling (scenario 1)
 
-Never touches a book except through the exporter's read-only corpus export.
+Never writes to a ledger; it reads one only through the reader's contracts
+(`autobook export`). Until the conversion from GnuCash is done, the backtest
+can run on a `corpus` document from the GnuCash export, because the `corpus`
+contract is unchanged (proposal 0005 §16).
 Contains the **backtest**, which is **rolling-origin**: for each calendar month m
 after the first, the index holds the rows dated before the first day of m and the
 test set is month m. Nothing dated in m or later enters m's index or token-Bayes
@@ -499,11 +629,11 @@ the memo was seen before in the index or is novel; gate thresholds are set on th
 **novel** stratum. Leave-one-out remains only as an upper bound and for the rule
 builder's quick "matches N historical rows" verdict. Also the **rule miner**
 (candidates from history, scored on a held-out period, accepted in a text file;
-proposal 0004), the **rule builder** (cluster, propose, backtest immediately,
-accept — GTK4 eventually, CLI first), the
-**assistant detector** (recurring debits and loan-shaped payments handed to
-GnuCash's assistants), the **pack validator**, and from proposal 0002 the
-**linkage backtest**.
+proposal 0004; `autobook trial mine`), the **rule builder** (cluster, propose,
+backtest immediately, accept; `autobook rules cluster`, `test` and `accept`),
+the **pack validator**, and from proposal 0002 the **linkage backtest**.
+Recurring debits get no special treatment: they are mined like any other group
+and mostly become creditor-ID rules.
 
 Built so far: the backtest and its command line (`python -m
 autobook.pipeline.trial backtest`, section 6.6). Its method:
@@ -540,110 +670,236 @@ autobook.pipeline.trial backtest`, section 6.6). Its method:
 
 ### Staging store
 
-This is the single staging schema; the proposals' schemas match it.
+This is the single staging schema: proposal 0005 §11, plus the document columns
+of proposal 0002 §7.
 
 ```
-statements(original_checksum PK,          -- of the paperless original or the file
-           paperless_doc_id, doc_version, -- NULL for file ingest
-           source_account, plugin, plugin_version,
-           period_start, period_end, opening_balance, closing_balance,
-           balance_check,                 -- passed | not_possible
+statements(checksum PK,                   -- of the OFX file
+           source_account, producer,      -- producer string from the driver, or NULL
+           period_start, period_end,
+           opening_balance, closing_balance,  -- integer cents, NULL if absent
            status, reason,                -- admitted | rejected; why rejected
            admitted_ts)                   -- time of the admission decision
 
-proposals(source_account, fitid_or_key,   -- PK (source_account, fitid_or_key)
-          proposal_id,                    -- AB- + ULID; in num on created transactions only
+proposals(source_account, line_key,       -- PK (source_account, line_key)
+          statement_checksum,
+          proposal_id,                    -- AB- + ULID; autobook-id on created entries only
           post_date, amount, currency,
           raw_memo, normalised_memo,
-          proposed_account, confidence, method, rule_id,
-          disposition, queue_reason, status,  -- status: pending|approved|rejected|applied
-          applied_tx_guid, human_correction,
-          statement_checksum, doc_id, doc_match, doc_candidates,
+          disposition, queue_reason,
+          proposed_account, confidence, method, rule_id,  -- method: rule | knn | llm
+          proposed_splits,                -- create_split only: every posting, account and cents
+          approved_splits,                -- create_split only: the postings as saved; what apply books
+          matched_entry,                  -- match_existing: the candidate found at proposal
+          status,                         -- pending|approved|skipped|rejected|applied
+                                          -- skipped releases the row's claim; it returns as `?` next time
+          applied_entry,                  -- set only after validation: created: the proposal ID;
+                                          -- matched: = matched_entry
+          batch, human_correction,
+          doc_id, doc_match, doc_candidates,  -- proposal 0002: linked bill, linked|weak|ambiguous|none, count
           classifier_version, normaliser_version, ts)
 
 transfers_pending(counterpart_account, amount, window_start, window_end,
-                  proposal_id, tx_guid)   -- first side of a cross-batch transfer
+                  proposal_id)            -- first side of a cross-batch transfer
+
+preimages(path PK,                        -- .autobook-preimage-<batch>-<ULID>: the exchange's temporary file, never renamed
+          batch, operation,               -- apply | undo
+          kind,                           -- before | rejected (a failed batch exchanged back)
+          sha256, kept_ts)                -- hash of the content at the path, so later saves to it are detected
 ```
 
-`fitid_or_key` is the bank-supplied FITID, or for statements without one the
-`(original_checksum, line_ordinal)` pair. The **proposal ID** is something
-else: `AB-` followed by a ULID (a 26-character sortable unique ID, short enough
-for GnuCash's `num`), generated per staged row. Only `num` values matching
-`^AB-[0-9A-HJKMNP-TV-Z]{26}$` count as Autobook IDs. `statement_checksum` is set
-for file ingest as well as paperless ingest. A row is `applied` only after the
-book process's read-back has confirmed it.
+`line_key` is the bank-supplied line ID, or for sources whose IDs are
+synthesised the `(statement checksum, line ordinal)` pair. The **proposal ID**
+is something else: `AB-` followed by a ULID (a 26-character sortable unique
+ID), generated once per staged row. Only an `autobook-id` value matching
+`^AB-[0-9A-HJKMNP-TV-Z]{26}$` counts as Autobook's; it is written on entries
+Autobook creates and on nothing else. `matched_entry` holds the candidate a matched row found at proposal: its
+`autobook-id` if it has one (the first side of a transfer), otherwise its
+content hash. `applied_entry` is set only after the read-back and every
+assertion have passed: the row's own proposal ID for a created row, the
+`matched_entry` for a matched row. `approved_splits` holds them as saved by `decide`, with any edited accounts; apply books those, and `proposed_splits` stays as the audit. `proposed_splits` holds every posting of a
+`create_split` row, so the review file shows and the writer books the same
+postings. `batch` names the batch
+a row was applied in; it is what `autobook undo BATCH` works from. A row is
+`applied` only after the ledger package's read-back and every assertion have
+passed.
 
 Amounts are integer cents. Document fields are IDs and counts, never content.
 
-## 5.3 Book process components
+Staging is SQLite under `$XDG_DATA_HOME` by default, with a PostgreSQL URI as
+an option. No production staging data exists; this schema is the first released
+one.
 
-The book process has two parts: the **exporter**, which only reads and exists
-from build step 2, and the **applier**, which writes and exists from build step
-5. They share the session manager.
+## 5.3 Ledger package components
+
+The ledger package has two parts: the **reader**, which only reads, and the
+**writer**, which writes and exists from build step 5. The reader starts with
+milestone B0, as a spike that emits `coa` and `corpus` from a synthetic ledger
+(chapter 9). Nothing outside the ledger package parses ledger text.
 
 | Component | Responsibility |
 |-----------|----------------|
-| **Session manager** | Opens with `SESSION_NORMAL_OPEN` for writes and `SESSION_READ_ONLY` for export and dry-run; never `SESSION_BREAK_LOCK`; one session per run. On the write path: after the last `CommitEdit`, `session.save()`, then the post-apply assertions, then `session.end()` in `finally`. On `ERR_BACKEND_LOCKED` (the lock error in `qofbackend.h`) it writes nothing and the launcher notifies. `SESSION_READ_ONLY` ignores locks, so an XML export with the GUI open reads the last *saved* state. |
-| **Exporter** | Produces `corpus`, `coa` and `existing` (including SX definitions) through the engine API, in a `SESSION_READ_ONLY` session. |
-| **Applier** | For each approved row. `create` / `create_split`: skip if its proposal ID is already a `num`; otherwise create (two splits, or a split specification that sums exactly) with the proposal ID in `num`. Before building `GncNumeric(cents, 100)` it takes the source account's commodity, verifies that both accounts share it and that its fraction is 100; no currency is hard-coded. `match_existing`: re-check the matched GUID; write **no `num`** and **no FITID / `online_id` stamp** to it. The only thing ever written to a matched transaction is a document link, and never over an existing one. Every mutation inside `BeginEdit` / `CommitEdit`. |
-| **Read-back** | A row is reported `applied` (in `apply-out`, and in staging) only after a read-back confirms it. XML: reopen `SESSION_READ_ONLY` and find its ID. SQL: an engine query. With XML nothing persists until `save()`, so a batch is all-or-nothing; SQL is durable per `CommitEdit` and `save()` is harmless. |
-| **Assertions** | After the batch, for each source account with a statement in the batch: (a) the change in its balance caused by the batch equals the sum of the rows applied; (b) where the statement has a closing balance, the account's balance on the closing date equals that closing balance minus the statement lines not yet applied (queued, `out_of_scope`, awaiting a scheduled transaction, pending transfer); (c) the Imbalance account is **unchanged** by the batch. Non-zero exit on failure. |
-| **Undo** | Deletes only transactions whose GUID is in staging with disposition `create` **and** whose `num` equals that row's proposal ID, asserting both before each delete. For a matched row it removes only the document link the batch added. |
+| **Reader** | Loads the whole ledger through Beancount's loader and produces `corpus`, `coa` and `existing`: accounts with their `open` and `close` dates and currencies, existing Autobook IDs, match candidates with content hashes, the root-name options, the SHA-256 of every loaded file, and the load's errors. Every assertion goes through it. |
+| **Writer** | `autobook init` creates the owned file with its header and prints the `include` line for the user to add. **Apply**, for a batch of approved rows: (1) *read* — re-hash every kept pre-image (a changed one is a displaced save), then load the ledger; the owned file must be among the loaded files, with root-name options matching the main file's, otherwise exit code 4; (2) *filter* — drop rows whose proposal ID is already in the ledger, and matched rows that already have an `applied_entry` still present (a matched row approved for the first time has only a `matched_entry` and goes on); (3) *check each row* — both accounts open on its date, its currency declared on the source account and allowed on the other, postings in whole cents summing to exactly zero; for a matched row the search again, which must find exactly one candidate, the recorded entry, in an account with no orphaned claim; a row that fails is queued; a batch with only matched rows skips (4) and (5), makes no journal or pre-image, and validates against the load of step 1; (4) *render* the entries; the new content is the current owned file plus the entries; (5) *compare, then replace* — re-hash every ledger file and every kept pre-image; if any differs from step 1, stop with exit code 4 and write nothing; otherwise write the batch journal and make it durable, write a temporary file in the same directory and `fsync` it, then **exchange** it with the owned file in one atomic step (`renameat2` with `RENAME_EXCHANGE`) and `fsync` the directory. Never a plain rename: after the exchange the swapped-out content is hashed, and if it is not the content the batch was rendered from, a save got in, so the writer exchanges back, writes nothing and exits with code 4. The exchange back is checked the same way; if the file was saved again in between, every version is kept as a file beside the journal and the conflict is reported. A displaced version is never deleted. Where the exchange is unavailable, the writer refuses (exit 4). Then read-back and assertions, below. `match_existing`: nothing is created and nothing is written. |
+| **Read-back** | Loads the ledger again after the replace. Every created row's proposal ID must appear exactly once, with the approved date, accounts and amounts. A matched row wrote nothing, so its ID is not looked for: its recorded entry must still be present, and the search, run again, must still find exactly one candidate: the recorded entry. A row is reported `applied` (in `apply-out`, and in staging) only after the read-back and every assertion have passed. |
+| **Assertions** | After the read-back: (a) the load reports no error that the first load did not report; (b) no byte of the owned file before the appended entries changed, and no other ledger file changed; (c) the balance of every account the batch wrote postings to moved by exactly the sum of those postings, and no other account's balance moved (a matched row writes none and moves nothing); (d) where the statement states a closing balance, the account's balance on the closing date equals that closing balance minus the statement lines not yet applied (queued, `out_of_scope`, pending transfer). **On any failure of the read-back or an assertion**, the writer restores the previous content of the owned file (only if the file still holds exactly what the replace wrote), exits with code 6 and marks nothing applied. |
+| **Undo** | Removes an entry only if its `autobook-id` is the proposal ID of a staged row with disposition `create` or `create_split` in that batch **and** the entry is in the owned file, asserting both before each removal. It removes exactly that entry's lines, through the same compare-then-replace and read-back as apply. An entry the user edited is still removed, with its differences listed before confirmation. Undo of a matched row changes staging only. |
 
-It never creates accounts, never creates scheduled transactions, never sets the
-reconciled flag, and never uses SQL against the book.
+**A created entry** looks like this (proposal 0005 §10.2):
 
-## 5.4 Launcher
+```beancount
+2026-07-14 * "REWE SAGT DANKE"
+  autobook-id: "AB-01JZ8M3Q6T5W9X2C4V7B1N0PKD"
+  Aktiva:Bank:Girokonto   -42.90 EUR
+  Ausgaben:Lebensmittel    42.90 EUR
+```
 
-A short shell wrapper that the user runs instead of `gnucash`. It arrives with
-the applier in build step 5; before that there is nothing to sequence.
+The flag is `*`, because the row was approved in the saved review file. Every
+posting carries an explicit amount; the writer never leaves one for Beancount to
+fill in. Money is `Decimal` built from integer cents and printed with exactly
+two decimals; a float never reaches `Decimal`. The currency is read from the
+statement and checked against both accounts' `open` directives; none is
+hard-coded. A linked bill adds `autobook-doc: "<URL>"`. The exact bytes (key
+names, ordering, quoting, the header of the owned file) are a contract with
+other tools and with undo; they get a specification under `docs/design/specs/`
+when the writer is built.
 
-1. Back up the book: a file copy where the backend is a file; `pg_dump` for a
-   PostgreSQL book when it is on `PATH`, with the database credentials from the
-   Secret Service, otherwise a warning; a warning for MySQL.
-2. Run the book process's exporter (read-only).
-3. Run the pipeline; if proposals are pending, generate the review file at
-   `$XDG_RUNTIME_DIR/autobook/review.txt` (mode `0600`) and open `$EDITOR`.
-4. Run the book process to apply, save, assert and read back. Remove the review
-   file.
-5. `exec gnucash` — always, regardless of the outcome of 1–4.
+**Why the writer checks the sum itself.** Beancount's own balance check is
+tolerant: it infers a tolerance of half the last printed digit, so two-decimal
+postings that are off by half a cent load without error.
 
-The launcher must always reach `exec gnucash`. There is no `set -e` abort path:
-each step runs as `step || notify`, the steps run inside a function, and a
-`trap` makes sure the `exec` happens and the review file is removed.
+**A ledger that already has errors can still be booked into.** Only a *new*
+load error rolls a batch back.
+
+**The owned file's header.** An included file does not inherit the main file's
+`name_assets` … `name_expenses` options. `autobook init` copies those five
+options into the owned file's header, and every run compares them with the main
+file's. This is the one thing other than transactions that Autobook writes.
+
+**The owned file is not private.** The user may correct an entry in it, and
+Fava (a web interface for Beancount ledgers) can edit or delete entries in any
+included file. So the writer never regenerates the file: it appends, and on
+undo it removes exact spans.
+
+**Idempotency.** Ledger and staging are two stores with no shared transaction.
+A crash between "file replaced" and "marked applied" leaves them disagreeing.
+Two things settle it. The proposal ID in the ledger: before each batch the
+reader finds created rows by ID and the filter step drops them, so nothing is
+created twice. And the **batch journal**, which the writer writes beside the
+staging store before the replace and removes after staging is updated. It
+holds the complete baseline: proposal IDs, the hash of every loaded file, the
+owned file's hash after the replace and its previous content, the path of the
+temporary file (which holds the swapped-out content after the exchange), the
+first load's errors and every account's balance. It is made durable before the
+exchange (`fsync` of the file and its directory; the owned file's directory is
+synced after the exchange). A run that finds a journal first checks the
+swapped-out file: if it is not the previous content, a save got in just before
+the exchange, so the writer exchanges back and marks nothing applied (exit 4).
+Otherwise it validates that batch against the journal's baseline: read-back and assertions pass and
+the rows are marked applied, or the previous content is restored — also when
+another ledger file changed in the meantime. If the owned
+file matches neither hash, Autobook touches nothing and reports (exit 4). IDs
+found in the ledger prove presence, not validation (section 6.5). `autobook status` lists Autobook entries that differ from
+what staging recorded, and proposal IDs that staging holds as applied but the
+ledger no longer contains. Both are reports, never writes: a missing entry is
+not silently created again.
+
+**No ledger lock; one writer lock.** Two Autobook runs are a different matter: both could pass the compare before either exchanges, and the second would overwrite the first. So `propose`, `apply`, `undo` and `decide` take Autobook's own **writer lock** (an advisory lock on a file beside the staging store, never in the ledger's directory) before the first read and hold it until staging is updated. A run that cannot take it writes nothing and exits with code 4. The lock binds Autobook only; editors and Fava do not know it.
+
+Against editors and Fava: Beancount has no lock. The guards are the compare before the
+replace on every ledger file, the single atomic exchange (`renameat2` with
+`RENAME_EXCHANGE`) whose swapped-out content is checked, so that a save that got
+in after the last hash is put back instead of overwritten and no reader sees a
+half-written file, and the read-back with the previous content kept. An editor
+holding unsaved changes to the owned file is not covered (proposal 0005,
+*Risks*).
+
+The ledger package writes transactions only, and only into the owned file. It
+never writes `open`, `close`, `balance`, `pad`, `price`, `commodity`, `plugin`
+or `include`, so it never creates accounts and never asserts a balance: balance
+assertions are the user's independent check on everything Autobook does. It
+never changes an entry Autobook did not create, and never edits any other file.
+
+## 5.4 The driver (outside Autobook)
+
+Autobook has no launcher and is not the driver of a run. The **driver** is a
+separate project in its own repository. It is described here only so that the
+hand-over is clear; none of it is Autobook code.
+
+The driver does what Autobook does not (proposal 0005 §1):
+
+1. gets a statement from the bank or from a document store;
+2. converts it to OFX with ofxstatement;
+3. decides when to run;
+4. calls Autobook's commands (section 5.5) and reads their exit codes and
+   `--json` output;
+5. puts the review file somewhere private, opens it in an editor, and hands the
+   saved file back;
+6. notifies the user, for example when a gate refuses or a statement is
+   rejected.
+
+What the driver hands over (proposal 0005 §4.1):
+
+| In | Notes |
+|----|-------|
+| One or more OFX files | To `autobook propose`. Parsed by Autobook's own parser. The memo must arrive unmodified. |
+| Optionally, a producer string per file | For example the plugin name and version. Recorded with the statement and part of the version tuple. |
+| The saved review file | To `autobook decide` or `autobook apply`. |
+
+What it gets back: an exit code, `--json` output on standard output, and the
+review file from `autobook review-file`.
+
+No Autobook command starts an editor or another program. A driver that runs
+ofxstatement and Autobook as separate commands combines nothing, which matters
+for the licence: ofxstatement is GPLv3 and Beancount is GPL-2.0-only
+([ADR-0005](../adr/0005-relicense-gpl-2-or-later.md), status Proposed).
 
 Unattended runs (homelab, no editor) are **[DEFERRED]** beyond v1: approval is a
 save of the review file, which needs a human (section 7).
 
-## 5.5 Command line and windows (proposal 0003)
+## 5.5 Command line
 
-> Designed in [proposal 0003](../proposals/draft/0003-windowed-interface-and-command-line.md),
-> still `draft`. Where this section and the proposal disagree, the proposal
-> governs.
+The command line is Autobook's whole interface; there are no windows. Every
+command accepts `--json` for machine-readable output. None of them starts an
+editor or another program (proposal 0005 §4.2).
 
-**The command line is the primary interface.** Every step of the journey is an
-`autobook` subcommand: `run` (the launcher's sequence), `gui`, `backup`,
-`export`, `propose`, `pending`, `review-file`, `decide --from`, `apply --from`,
-`undo`, `status`, `trial backtest` / `trial accept`, `rules cluster` / `test` /
-`accept`, `assistants` (proposal 0003 §2.1). With `--json`, stdout is one
-versioned contract document and messages go to stderr; no command prompts
-without a TTY; exit codes are 0 done, 1 nothing to do, 2 usage or input error,
-3 gate refused, 4 book locked, 5 review file did not parse, 6 assertion or
-read-back failed (§2.3).
+| Command | Does | Touches the ledger |
+|---------|------|--------------------|
+| `autobook init` | Create the owned file with its header; print the `include` line for the user to add | creates the owned file |
+| `autobook propose FILE…` | Admit the statements, dedup, correlate, classify, dispose, run the batch gate, stage | read |
+| `autobook pending` | Count and list pending proposals; exit 1 when there are none | none |
+| `autobook review-file` | Write the review file to standard output | read (account list) |
+| `autobook decide --from FILE` | Parse a saved review file and record its decisions to staging; `--check` parses only | read (account list) |
+| `autobook apply --from FILE` | `decide`, then book the approved rows: write, read back, assert | **write** |
+| `autobook undo BATCH` | Remove what a batch created; asks for confirmation unless `--yes` | **write** |
+| `autobook forget PATH` | Remove the staging record of a pre-image the user has deleted; refuses while the file exists | writes staging (under the writer lock) |
+| `autobook status` | Last run, pending counts, the version tuple in force, entries that differ from staging, kept pre-images whose content changed. | read |
+| `autobook export` | Print the reader's contracts (`coa`, `corpus`, `existing`), for inspection and for the trial | read |
+| `autobook trial backtest …` | Rolling-origin backtest | read |
+| `autobook trial mine` | Mine rule candidates from history (proposal 0004) | read |
+| `autobook trial accept` | Record this trial's version tuple for production | none |
+| `autobook rules cluster` · `test RULE` · `accept RULE` | Cluster unresolved rows; score a candidate rule against history; add a scored rule to the rules file | read |
 
-**The windows are a client of the command line.** GTK4 windows — Start, Review,
-Booking, the refusal dialog and Trial (Backtest, Rule Builder, Assistants) —
-run the subcommands as subprocesses and render their `--json` output. The
-client imports only `autobook.contracts`; it never imports `gnucash` or the
-pipeline.
+Exit codes (proposal 0005 §4.3):
 
-**The review file is the Review window's state.** The window loads
-`autobook review-file`, edits its lines, renders the list from parsing that
-text, and hands it to `autobook decide --from` (*Save Decisions*) or
-`autobook apply --from` (*Approve and Book*). Saving the review file stays the
-approval in both surfaces; there is no other path from a window to staging or a
-book. *Open in Editor…* blocks the window while `$EDITOR` has the file and
-re-parses on return.
+| Code | Meaning | Written |
+|------|---------|---------|
+| 0 | Done | as the command says |
+| 1 | Nothing to do | nothing |
+| 2 | Usage or configuration error | nothing |
+| 3 | The batch gate or the version gate refused | nothing |
+| 4 | The ledger is not writable as expected: the owned file is not included, its root-name options differ from the main file's, a ledger file changed during the run, or another Autobook run holds the writer lock | nothing |
+| 5 | The review file did not parse; the line number is on standard error | nothing |
+| 6 | The read-back or an assertion failed; the previous file was restored | no ledger file changes (every included file byte-identical); the rejected batch is kept as a pre-image beside the owned file and recorded in staging |
+| 7 | A statement was rejected at admission; the reason is reported per file | nothing staged from that statement |
 
-`autobook gui` is the launcher with the Review window as its review step and
-keeps the launcher's invariant: it always reaches `exec gnucash`.
+The numbering is fixed when the first command that returns 3–7 lands.
+
+Of these commands, only the backtest exists today, as `python -m
+autobook.pipeline.trial backtest` (section 6.6).
+
+**Saving the review file stays the only approval.** `decide` and `apply` take
+the saved file; there is no other path from a command to staging decisions or
+to the ledger. Whether anything richer than the review file is built (a Fava
+extension, a terminal UI) is **[OPEN]** and decided at the last build step (packs and packaging), on
+what the review file has turned out to lack (proposal 0005, *Open questions*).

@@ -1,40 +1,62 @@
-%% Runtime — one interactive booking run (section 6.1)
+%% Runtime — one booking run (section 6.1)
 %% Diagrams as code. Render with any Mermaid renderer.
 sequenceDiagram
     actor U as User
-    participant L as Launcher
-    participant P as Pipeline
+    participant D as Driver (separate project)
+    participant A as Autobook commands
     participant PL as paperless-ngx
     participant S as Staging
-    participant B as Book process
-    participant G as GnuCash desktop
+    participant L as Ledger package
+    participant F as Ledger files
 
-    U->>L: start (instead of gnucash)
-    L->>L: backup book (file copy, or pg_dump)
-    L->>B: export corpus, CoA, existing, SX definitions (READ_ONLY)
-    B-->>P: JSON
-    L->>P: run
-    P->>PL: list new statements, fetch originals (?version=)
-    P->>P: parse, balance check, normalise, dedup, correlate
-    P->>PL: bill metadata for the batch window
-    P->>P: link bills, classify, disposition, batch gate
-    P->>S: stage proposals
-    alt batch gate refuses
-        P-->>L: refusal
-        L->>U: notify
+    D->>D: get the statement, convert it to OFX (outside Autobook)
+    D->>A: autobook propose FILE…
+    A->>A: parse OFX, admit each statement whole or not at all
+    A->>L: read coa, corpus, existing
+    L->>F: load the main file and its includes
+    L-->>A: contracts
+    A->>A: normalise, dedup, correlate (transfers, match_existing)
+    A->>PL: bill metadata for the batch window
+    A->>A: link bills, classify, disposition, batch gate, version gate
+    alt a statement is rejected at admission
+        A-->>D: exit 7, reason per file, nothing staged from that statement
+    else batch gate or version gate refuses
+        A-->>D: exit 3, nothing written
     else rows to review
-        L->>U: open review file in $EDITOR (gated rows pre-marked a)
-        U-->>L: saved = approval of rows marked a
-        L->>P: strict parse by ID
-        P->>S: approve / correct / reject
-        Note over L,B: until build step 5 the run stops here: decisions recorded, nothing written
-        L->>B: apply approved rows (NORMAL_OPEN)
-        B->>B: drop rows whose ID is already a num
-        B->>B: create / split / match_existing, set doc link
-        B->>B: session.save()
-        B->>B: post-apply assertions
-        B->>B: read-back confirms each row
-        B-->>S: proposal_id, tx_guid, status
-        L->>L: remove review file
+        A->>S: stage proposals
+        A-->>D: exit 0
+        D->>A: autobook review-file
+        A-->>D: review file on standard output (gated rows pre-marked a)
+        D->>U: open the review file in an editor
+        U-->>D: saved = approval of rows marked a
+        D->>A: autobook apply --from FILE
+        A->>A: take the writer lock, recover any journal, check kept pre-images (a refusal is exit 4, staging unchanged)
+        A->>A: strict parse by ID (a parse error is exit 5, nothing applied)
+        A->>S: approve / correct / reject
+        Note over D,L: until build step 5 the driver calls autobook decide instead. Decisions recorded, nothing written
+        A->>L: apply-in with the approved rows
+        L->>F: 1 read, SHA-256 of every file (owned file not included or root names differ is exit 4)
+        L->>L: 2 filter, drop rows whose proposal ID is in the ledger and matched rows whose applied_entry is still present
+        L->>L: 3 check each row (accounts open, currency, exact zero sum), a failing row is queued
+        alt only matched rows
+            L->>F: skip render, journal and exchange; load again, steps 6 and 7 against the fresh load
+        else created rows
+            L->>L: 4 render the entries
+            L->>F: 5 compare all hashes and kept pre-images (a change is exit 4), write the journal, checked atomic exchange with the owned file
+            L->>F: 6 read back, every created ID exactly once as approved, every matched entry still the only candidate
+        end
+        L->>L: 7 assert (no new load error, nothing else changed, balances moved by the postings written, kept pre-images unchanged)
+        alt read-back or an assertion fails, created rows
+            L->>F: exchange back to the previous content, keep the rejected batch as a pre-image
+            L-->>A: nothing applied
+            A-->>D: exit 6
+        else a check fails, only matched rows
+            L-->>A: nothing applied, nothing to restore
+            A-->>D: exit 6
+        else all pass
+            L-->>A: apply-out with proposal_id, entry, status
+            A->>S: mark rows applied, record applied_entry
+            A-->>D: exit 0
+        end
     end
-    L->>G: exec gnucash (always)
+    D->>U: notify (the driver's job)
