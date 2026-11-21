@@ -251,7 +251,7 @@ Two details of the checks:
   rolls a batch back.
 
 **Recovery (§10.4).** The ledger and staging are two stores with no shared
-transaction. A crash before the rename in step 5 leaves the ledger untouched,
+transaction. A crash before the exchange in step 5 leaves the ledger untouched,
 and the whole batch is re-run. A crash between "file replaced" and "marked
 applied in staging" leaves the created entries in the owned file, each with its
 proposal ID in `autobook-id`; a later run finds them by ID and drops them at
@@ -262,13 +262,14 @@ Finding a batch's IDs in the ledger proves the entries are present, not that
 the batch passed its checks. So the writer keeps a **batch journal** beside the
 staging store. It holds everything steps 6 and 7 compare against: the batch and
 its proposal IDs, the SHA-256 of every loaded file from step 1, the SHA-256 of
-the owned file after the replace, the owned file's previous content, the errors
-the first load reported, and the first load's balance of every account. It is
-removed only after staging is updated.
+the owned file after the replace, the owned file's previous content, the path
+of the temporary file (which holds the swapped-out content after the exchange),
+the errors the first load reported, and the first load's balance of every
+account. It is removed only after staging is updated.
 
-**Durability.** A journal that can be lost while the rename survives is no
+**Durability.** A journal that can be lost while the exchange survives is no
 journal. The order is: write the journal and `fsync` it and its directory;
-write the temporary file and `fsync` it; rename; `fsync` the owned file's
+write the temporary file and `fsync` it; exchange; `fsync` the owned file's
 directory. The journal's removal is likewise followed by an `fsync` of its
 directory, after staging has committed.
 
@@ -276,8 +277,12 @@ Every `apply` and `undo` first looks for a journal, under the writer lock:
 
 - The owned file has the journal's *before* hash: the replace never happened.
   The journal is discarded and the batch is applied from the start.
-- It has the *after* hash: the batch was written and never validated. Steps 6
-  and 7 run now, against the journal's baseline and not against the ledger as
+- It has the *after* hash: the batch was written and never validated. First
+  the swapped-out file at the journal's temporary path is checked. If it is
+  not the owned file's previous content, a save got in just before the
+  exchange: Autobook exchanges back, so the saved edit is at the owned path
+  again, marks nothing applied and exits with code 4. Only if it is the
+  previous content do steps 6 and 7 run, against the journal's baseline and not against the ledger as
   it stands: the other files' hashes, the errors and the balances are the
   journal's. If they pass, the rows are marked applied. If they fail — also
   because another ledger file changed in the meantime, so that the batch can

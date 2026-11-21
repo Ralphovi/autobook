@@ -236,16 +236,19 @@ one does not produce an error — it produces a wrong ledger.
 - **An interrupted batch is validated before it counts.** Before the replace,
   write the batch journal beside the staging store. It holds the complete
   baseline the assertions need: proposal IDs, the hash of every loaded file,
-  the owned file's hash after the replace and its previous content, the first
-  load's errors, and every account's balance. A run that finds a journal
-  validates that batch against the journal's baseline, never against the
+  the owned file's hash after the replace and its previous content, the path
+  holding the swapped-out content after the exchange, the first load's errors,
+  and every account's balance. A run that finds a journal first
+  checks the swapped-out file: if it is not the previous content, a save got in
+  just before the exchange, so exchange back and mark nothing applied. Only
+  then does it validate that batch against the journal's baseline, never against the
   ledger as it now stands, or restores the previous content — also when
   another ledger file changed in the meantime. If the owned file matches
   neither recorded hash it touches nothing and reports.
 - **Writes are durable in order.** `fsync` the journal and its directory
-  before the rename; `fsync` the temporary file before the rename and the
-  owned file's directory after it; `fsync` after removing the journal. A
-  rename that survives a power loss while its journal does not is an
+  before the exchange; `fsync` the temporary file before the exchange and the
+  owned file's directory after it; `fsync` after removing the journal. An
+  exchange that survives a power loss while its journal does not is an
   unvalidated batch. Finding IDs in the ledger proves presence, not validation.
 - **Idempotency on re-run.** Before each batch, find created rows by their
   `autobook-id` and matched rows by the hash in staging, verified in the

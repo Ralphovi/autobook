@@ -620,13 +620,14 @@ rows by ID and drops them, so nothing is created twice.
 the batch passed its checks. So the writer keeps a **batch journal** beside the
 staging store. It holds everything steps 6 and 7 compare against: the batch and
 its proposal IDs, the SHA-256 of every loaded file from step 1, the SHA-256 of
-the owned file after the replace, the owned file's previous content, the errors
-the first load reported, and the first load's balance of every account. It is
-removed only after staging is updated.
+the owned file after the replace, the owned file's previous content, the path
+of the temporary file (which holds the swapped-out content after the exchange),
+the errors the first load reported, and the first load's balance of every
+account. It is removed only after staging is updated.
 
-**Durability.** A journal that can be lost while the rename survives is no
+**Durability.** A journal that can be lost while the exchange survives is no
 journal. The order is: write the journal and `fsync` it and its directory;
-write the temporary file and `fsync` it; rename; `fsync` the owned file's
+write the temporary file and `fsync` it; exchange; `fsync` the owned file's
 directory. The journal's removal is likewise followed by an `fsync` of its
 directory, after staging has committed.
 
@@ -634,8 +635,12 @@ Every `apply` and `undo` first looks for a journal, under the writer lock:
 
 - The owned file has the journal's *before* hash: the replace never happened.
   The journal is discarded and the batch is applied from the start.
-- It has the *after* hash: the batch was written and never validated. Steps 6
-  and 7 run now, against the journal's baseline and not against the ledger as
+- It has the *after* hash: the batch was written and never validated. First
+  the swapped-out file at the journal's temporary path is checked. If it is
+  not the owned file's previous content, a save got in just before the
+  exchange: Autobook exchanges back, so the saved edit is at the owned path
+  again, marks nothing applied and exits with code 4. Only if it is the
+  previous content do steps 6 and 7 run, against the journal's baseline and not against the ledger as
   it stands: the other files' hashes, the errors and the balances are the
   journal's. If they pass, the rows are marked applied. If they fail — also
   because another ledger file changed in the meantime, so that the batch can
@@ -667,13 +672,13 @@ confirmation. Undo of a matched row changes staging only.
 
 Beancount has no lock, so nothing stops an editor or Fava from changing a
 file. The guards are compare-before-write on every ledger
-file (the same check Fava's editor makes before saving), a single atomic
-rename so no reader sees a half-written file, and the read-back with the
+file (the same check Fava's editor makes before saving), a single checked
+atomic exchange (below) so no reader sees a half-written file, and the read-back with the
 previous content kept. Fava notices the change and reloads. An editor holding
 unsaved changes to the owned file is not covered; see *Risks*.
 
 Two Autobook runs are a different matter: both could pass the compare before
-either renames, and the second would overwrite the first. So `apply` and
+either exchanges, and the second would overwrite the first. So `apply` and
 `undo` take Autobook's own **writer lock** (an advisory lock on a file
 beside the staging store, never in the ledger's directory) before the first
 read and hold it until staging is updated. A run that cannot take it writes
@@ -1044,7 +1049,8 @@ like any other group and mostly become creditor-ID rules.
      and currency in the window is queued, not matched to it;
    - a change to any ledger file between read and replace stops the write;
    - a save to the owned file between the last re-hash and the exchange is
-     put back at the owned path, and nothing is written;
+     put back at the owned path, and nothing is written — also when Autobook
+     crashes right after the exchange and the next run recovers;
    - a batch holding one created row and one matched row applies: the matched
      row's ID is not required in the ledger and its amount is not counted as
      balance movement;
