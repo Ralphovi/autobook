@@ -180,9 +180,9 @@ one does not produce an error — it produces a wrong ledger.
   the read-back and every assertion have passed. For a created row the
   read-back finds its proposal ID exactly once with the approved date, accounts
   and amounts. A matched row wrote nothing, so its ID is not looked for: its
-  recorded entry must still be present and still satisfy the whole match
-  predicate (source account, amount, currency, date window, claim). The
-  predicate is evaluated at proposal, again at apply, and in the read-back.
+  search, run again, must find exactly one candidate and it must be the recorded
+  entry. The search runs at proposal, again at apply, and again in the
+  read-back.
 - **The assertions.** The load reports no error it did not report before the
   write. No byte of the owned file before the appended entries changed, and no
   other file changed. The balance of every account the batch wrote postings to
@@ -222,9 +222,10 @@ one does not produce an error — it produces a wrong ledger.
   absent match is queued; never guess between candidates. Do not filter on
   whether the user has asserted a balance since.
 - **A claim outlives an edit.** If a matched hand-written entry's hash is no
-  longer in the ledger, its claim becomes an orphaned claim. A later line of
-  the same amount and currency in that account within the window is queued,
-  never matched, until the user resolves the orphan. Dropping the claim would
+  longer in the ledger, its claim becomes an orphaned claim, and matching is
+  paused for that whole source account: every line that would match there is
+  queued until the user resolves the orphan. Autobook cannot tell which entry
+  the edited one is, so blocking only the old amount and date is not enough. Dropping the claim would
   let two payments become one entry.
 - **A matched hand-written entry is identified by its content hash**, excluding
   metadata and file position. Never by file and line: both move whenever anything above the

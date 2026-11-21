@@ -201,9 +201,9 @@ whole or not at all.
    present in the ledger.
 3. **Check each row.** Both accounts are open on its date; its currency is
    declared on the source account and allowed on the other; its postings are in
-   whole cents and sum to exactly zero. For a matched row, the whole match
-   predicate is evaluated again: source account, amount, currency, date window
-   and claim. A row that fails is queued, and the batch goes on without it.
+   whole cents and sum to exactly zero. For a matched row, the search is run
+   again: exactly one candidate must remain, the recorded entry, in an account
+   with no orphaned claim. A row that fails is queued, and the batch goes on without it.
 4. **Render** the entries. Every posting carries an explicit amount, built from
    integer cents and printed with two decimals. The new content is the current
    owned file plus the entries.
@@ -220,9 +220,8 @@ whole or not at all.
    - Every **created** row's proposal ID appears exactly once, with the
      approved date, accounts and amounts.
    - A **matched** row wrote nothing, so its ID is not looked for. Its recorded
-     entry must still be present and still satisfy the whole match predicate:
-     a posting of the row's amount and currency in the row's source account,
-     dated within the window.
+     entry must still be present, and the search, run again, must still find
+     exactly one candidate: that entry.
 7. **Assert.**
    - The load reports no error that step 1 did not report.
    - No byte of the owned file before the appended entries changed, and no

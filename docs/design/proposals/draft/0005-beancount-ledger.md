@@ -451,10 +451,10 @@ not make an entry unavailable.
 
 If the user later edits a matched hand-written entry, its hash changes and the
 staged row no longer finds its entry. The claim is **not** dropped: it becomes
-an *orphaned claim*, which still holds the row's source account, amount,
-currency and date. While it exists, no line may match a posting of that amount
-and currency in that account within the window of the orphaned row's date; such
-a line is queued with the reason "a matched entry changed". `autobook status`
+an *orphaned claim*. Autobook cannot tell which entry the edited one is, so
+while an orphaned claim exists, **matching is paused for that whole source
+account**: every line that would go through `match_existing` there is queued
+with the reason "a matched entry changed". `autobook status`
 lists orphaned claims, and the orphaned row returns to the review file as `?`,
 where the user points it at its entry again. Otherwise the edited entry would
 be a later line's only candidate and two payments would become one entry.
@@ -565,8 +565,9 @@ updated after step 7 or 8.
    matched rows whose matched entry is recorded in staging and still present.
 3. **Check each row.** Both accounts open on its date; its currency declared
    on the source account and allowed on the other; postings in whole cents
-   summing to exactly zero. For a matched row, the whole match predicate is
-   evaluated again: source account, amount, currency, date window and claim.
+   summing to exactly zero. For a matched row, the **search is run again**
+   against the ledger as loaded in step 1: exactly one candidate must remain,
+   and it must be the recorded entry; the account must have no orphaned claim.
    A row that fails is queued.
 4. **Render** the entries; the new content is the current owned file plus the
    entries.
@@ -582,9 +583,8 @@ updated after step 7 or 8.
    - Every **created** row's proposal ID appears exactly once, with the
      approved date, accounts and amounts.
    - A **matched** row wrote nothing, so its ID is not looked for. Its
-     recorded entry must still be present and still satisfy the whole match
-     predicate: a posting of the row's amount and currency in the row's source
-     account, dated within the window.
+     search, run again on the reloaded ledger, must still find exactly one
+     candidate, and it must be the recorded entry.
 7. **Assert.**
    - The load reports no error that step 1 did not report.
    - No byte of the owned file before the appended entries changed, and no
@@ -964,9 +964,9 @@ full. The classification, privacy and review-file rules there are unchanged.
 - **A transfer is booked once.** Every transfer line goes through a
   source-account `match_existing` search before classification.
 - **`match_existing` searches the source account** and never guesses between
-  candidates. The whole match predicate (source account, amount, currency,
-  date window, claim) is evaluated in the search, again at apply, and in the
-  read-back. Claims are per source account, so the second side of a transfer
+  candidates. The search is run at proposal, again at apply and again in the
+  read-back; exactly one candidate must remain each time. An orphaned claim
+  pauses matching for its whole source account. Claims are per source account, so the second side of a transfer
   can match the entry the first side created.
 - **One Autobook writer at a time.** `apply` and `undo` hold the writer lock
   from the first read until staging is updated.
@@ -1057,8 +1057,9 @@ like any other group and mostly become creditor-ID rules.
      run restores the previous content and marks nothing applied;
    - a matched entry moved outside the date window between proposal and apply:
      the row is queued, not marked applied;
-   - a matched hand-written entry is edited: a later line with the same amount
-     and currency in the window is queued, not matched to it;
+   - a matched hand-written entry is edited: every later line that would
+     match in that account is queued until the orphan is resolved;
+   - a second candidate appears between proposal and apply: the row is queued;
    - a change to any ledger file between read and replace stops the write;
    - a save to the owned file between the last re-hash and the exchange is
      put back at the owned path, and nothing is written — also when Autobook
