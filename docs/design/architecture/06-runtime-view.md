@@ -136,7 +136,7 @@ Tiers follow the precedence table in section 5.2 (proposal 0002 §5.1).
 Then: a target account that is not open in the ledger on the line's date, a
 currency that the account's `open` directive does not allow, or confidence below
 threshold → `queue`. Before any `create`, the row's **source** account is
-searched within ±5 days for a posting of the same amount in an entry that
+searched within ±5 days for a posting of the same amount and currency in an entry that
 is not already claimed for that source account: unique → `match_existing`;
 ambiguous → `queue`. An entry is **claimed for a source account** when a staged
 row of that account created it or matched it. An `autobook-id` (the metadata
@@ -212,8 +212,8 @@ whole or not at all.
    - Every **created** row's proposal ID appears exactly once, with the
      approved date, accounts and amounts.
    - A **matched** row wrote nothing, so its ID is not looked for. Its recorded
-     entry must still be present, with a posting of the row's amount in the
-     row's source account.
+     entry must still be present, with a posting of the row's amount and
+     currency in the row's source account.
 7. **Assert.**
    - The load reports no error that step 1 did not report.
    - No byte of the owned file before the appended entries changed, and no

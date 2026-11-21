@@ -424,7 +424,7 @@ The statement line is already in the ledger: the user wrote it by hand, or it
 is the second side of a transfer.
 
 - **Search** the line's **source** account for a posting with the same amount
-  within ±5 days that is not already claimed for that source account. Whether
+  **and the same currency** within ±5 days that is not already claimed for that source account. Whether
   the user has asserted a balance since is not a filter.
 - **Unambiguous** → nothing is created. Staging records which entry matched.
   **Ambiguous or absent** → queue. Never guess.
@@ -570,7 +570,7 @@ updated after step 7 or 8.
      approved date, accounts and amounts.
    - A **matched** row wrote nothing, so its ID is not looked for. Its
      recorded entry must still be present, with a posting of the row's amount
-     in the row's source account.
+     and currency in the row's source account.
 7. **Assert.**
    - The load reports no error that step 1 did not report.
    - No byte of the owned file before the appended entries changed, and no
@@ -904,7 +904,8 @@ full. The classification, privacy and review-file rules there are unchanged.
 - **A transfer is booked once.** Every transfer line goes through a
   source-account `match_existing` search before classification.
 - **`match_existing` searches the source account** and never guesses between
-  candidates. Claims are per source account, so the second side of a transfer
+  candidates. A match is on amount **and currency**, in the search and in the
+  read-back. Claims are per source account, so the second side of a transfer
   can match the entry the first side created.
 - **One Autobook writer at a time.** `apply` and `undo` hold the writer lock
   from the first read until staging is updated.
@@ -995,6 +996,8 @@ like any other group and mostly become creditor-ID rules.
      nothing;
    - the second side of a transfer matches the entry the first side created,
      once, and a third line with the same amount does not;
+   - a line does not match a posting with the same number in another
+     currency, neither in the search nor in the read-back;
    - postings off by one cent, and off by half a cent, are both refused;
    - undo removes exactly the batch's created entries, including when
      unrelated entries were added to the owned file afterwards;

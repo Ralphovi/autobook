@@ -171,8 +171,8 @@ one does not produce an error — it produces a wrong ledger.
   the read-back and every assertion have passed. For a created row the
   read-back finds its proposal ID exactly once with the approved date, accounts
   and amounts. A matched row wrote nothing, so its ID is not looked for: its
-  recorded entry must still be present, with a posting of the row's amount in
-  the row's source account.
+  recorded entry must still be present, with a posting of the row's amount
+  and currency in the row's source account.
 - **The assertions.** The load reports no error it did not report before the
   write. No byte of the owned file before the appended entries changed, and no
   other file changed. The balance of every account the batch wrote postings to
@@ -203,7 +203,8 @@ one does not produce an error — it produces a wrong ledger.
   nothing to the ledger; staging records the matched entry in `applied_entry`:
   its `autobook-id` if it has one, otherwise its content hash.
 - **`match_existing` searches the row's source account**, not the target
-  account, and its candidates are entries not already claimed **for that
+  account, for a posting with the row's amount **and currency** (an account
+  may hold several currencies; the number alone is not a match), and its candidates are entries not already claimed **for that
   source account**: an entry is claimed for an account when a staged row of
   that account created or matched it. An `autobook-id` alone does not exclude
   an entry, or the second side of a transfer could never match the entry the
@@ -431,7 +432,8 @@ When a defect class recurs, it graduates to a gate and drops out of review scope
   classified instead of matched or queued as "pending transfer"; a PayPal row
   classified as an expense rather than matched to its funding transaction (in
   `account` mode); a `match_existing` search on the target account, or one
-  that picks between several candidates; a claim that is not per source account
+  that picks between several candidates; a match on the amount without the
+  currency; a claim that is not per source account
   (the second side of a transfer unable to match, or one posting matched
   twice); a matched entry identified by file
   and line.
