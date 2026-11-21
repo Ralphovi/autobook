@@ -4,7 +4,7 @@ graph TB
     driver["Driver (separate project)<br/>hands over OFX files and the saved review file"]
 
     subgraph autobook["Autobook — one process, one virtual environment"]
-        cli["Command line<br/>init · propose · pending · review-file · decide · apply · undo<br/>· status · export · trial · rules (--json, exit codes 0–7)"]
+        cli["Command line<br/>init · propose · pending · review-file · decide · apply · undo<br/>· status · forget · export · trial · rules (--json, exit codes 0–7)"]
 
         subgraph inp["Input — never imports ofxstatement"]
             ofx["OFX parser<br/>(standard library only)"]
@@ -24,7 +24,7 @@ graph TB
             trial["Trial tooling<br/>rolling-origin backtest · rule mining · rule builder<br/>· pack validator · linkage backtest"]
         end
 
-        staging[("Staging store<br/>SQLite by default<br/>statements · proposals · transfers_pending")]
+        staging[("Staging store<br/>SQLite by default<br/>statements · proposals · transfers_pending · preimages")]
 
         subgraph ledgerpkg["Ledger package — the only code that imports beancount (src/autobook/book/ today)"]
             reader["Reader<br/>accounts · corpus · existing entries with content hashes<br/>· root-name options · SHA-256 of every file · load errors"]

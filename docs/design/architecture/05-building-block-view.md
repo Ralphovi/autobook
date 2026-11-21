@@ -131,8 +131,9 @@ and excludes metadata and position (Beancount's `hash_entry` with
 The `match_existing` search runs in the pipeline, over the `existing` contract,
 so that a row can be queued as a pending transfer and the review file can show
 the match. Nothing is ever written to a matched entry, so apply has no write to
-guard there: its filter step drops matched rows whose hash is in staging and
-still present in the ledger (section 5.3). `existing` is needed before the
+guard there: its filter step drops matched rows whose validated `applied_entry`
+is still present in the ledger; a row with only a proposed `matched_entry` goes
+on to be checked (section 5.3). `existing` is needed before the
 pipeline runs, because the transfer search comes before classification.
 
 ## 5.2 Pipeline components
@@ -561,11 +562,13 @@ by hand, or it is the second side of a transfer. The search looks in the row's
 **source** account for a posting with the same amount and the same currency within ±5 days, among
 entries not already claimed for that source account. An entry is *claimed for a
 source account* when a staged row of that account created it or matched it;
-`applied_entry` records which entry a row refers to. An `autobook-id` alone does
+another pending, approved or applied row of that account refers to the entry (a row never excludes its own candidate; a rejected or skipped row releases its claim) through `matched_entry` from proposal on, and through
+`applied_entry` once validated; both count, so two pending rows cannot claim the
+same entry. An `autobook-id` alone does
 not exclude an entry: the first side of a transfer creates an entry that is
 claimed for its own account only, so the second side's search in the other
 account finds it and matches it once. Whether the user has asserted a balance since does not matter.
-One candidate: nothing is created, and staging records the matched entry's
+One candidate: nothing is created, and staging records in `matched_entry` the matched entry's
 `autobook-id` if it has one, otherwise its content hash (section 5.1). No candidate or more than one: the row is queued. The search
 never guesses.
 
@@ -603,7 +606,7 @@ Nothing else reaches the ledger.
 
 The file is parsed back **by ID, never by position**, strictly: an unknown ID,
 an unknown status character, an account that is not open in the ledger or an
-amount or currency that differs from staging aborts the whole parse with a line number
+amount or currency that differs from staging aborts the whole parse with a line number. A split row's posting lines, the source posting first, carry the row's ID and a posting number; destination accounts may be changed and are checked against the live chart of accounts, amounts may not
 (exit code 5) and applies nothing. A row with a weak bill match carries a hint
 line, nothing more. What was proposed and what was saved are both recorded per
 row; corrections are recorded as `corrected` corpus rows. `autobook decide`
@@ -685,15 +688,24 @@ proposals(source_account, line_key,       -- PK (source_account, line_key)
           raw_memo, normalised_memo,
           disposition, queue_reason,
           proposed_account, confidence, method, rule_id,  -- method: rule | knn | llm
-          status,                         -- pending|approved|rejected|applied
-          applied_entry,                  -- created: the row's proposal ID; matched: the entry's
-                                          -- autobook-id if it has one, else its content hash
+          proposed_splits,                -- create_split only: every posting, account and cents
+          approved_splits,                -- create_split only: the postings as saved; what apply books
+          matched_entry,                  -- match_existing: the candidate found at proposal
+          status,                         -- pending|approved|skipped|rejected|applied
+                                          -- skipped releases the row's claim; it returns as `?` next time
+          applied_entry,                  -- set only after validation: created: the proposal ID;
+                                          -- matched: = matched_entry
           batch, human_correction,
           doc_id, doc_match, doc_candidates,  -- proposal 0002: linked bill, linked|weak|ambiguous|none, count
           classifier_version, normaliser_version, ts)
 
 transfers_pending(counterpart_account, amount, window_start, window_end,
                   proposal_id)            -- first side of a cross-batch transfer
+
+preimages(path PK,                        -- .autobook-preimage-<batch>-<ULID>: the exchange's temporary file, never renamed
+          batch, operation,               -- apply | undo
+          kind,                           -- before | rejected (a failed batch exchanged back)
+          sha256, kept_ts)                -- hash of the content at the path, so later saves to it are detected
 ```
 
 `line_key` is the bank-supplied line ID, or for sources whose IDs are
@@ -701,9 +713,13 @@ synthesised the `(statement checksum, line ordinal)` pair. The **proposal ID**
 is something else: `AB-` followed by a ULID (a 26-character sortable unique
 ID), generated once per staged row. Only an `autobook-id` value matching
 `^AB-[0-9A-HJKMNP-TV-Z]{26}$` counts as Autobook's; it is written on entries
-Autobook creates and on nothing else. `applied_entry` holds the row's own proposal ID for
-a created row; for a matched row it holds the matched entry's `autobook-id` if
-it has one (the first side of a transfer) and otherwise its content hash. `batch` names the batch
+Autobook creates and on nothing else. `matched_entry` holds the candidate a matched row found at proposal: its
+`autobook-id` if it has one (the first side of a transfer), otherwise its
+content hash. `applied_entry` is set only after the read-back and every
+assertion have passed: the row's own proposal ID for a created row, the
+`matched_entry` for a matched row. `approved_splits` holds them as saved by `decide`, with any edited accounts; apply books those, and `proposed_splits` stays as the audit. `proposed_splits` holds every posting of a
+`create_split` row, so the review file shows and the writer books the same
+postings. `batch` names the batch
 a row was applied in; it is what `autobook undo BATCH` works from. A row is
 `applied` only after the ledger package's read-back and every assertion have
 passed.
@@ -724,7 +740,7 @@ milestone B0, as a spike that emits `coa` and `corpus` from a synthetic ledger
 | Component | Responsibility |
 |-----------|----------------|
 | **Reader** | Loads the whole ledger through Beancount's loader and produces `corpus`, `coa` and `existing`: accounts with their `open` and `close` dates and currencies, existing Autobook IDs, match candidates with content hashes, the root-name options, the SHA-256 of every loaded file, and the load's errors. Every assertion goes through it. |
-| **Writer** | `autobook init` creates the owned file with its header and prints the `include` line for the user to add. **Apply**, for a batch of approved rows: (1) *read* — load the ledger; the owned file must be among the loaded files, with root-name options matching the main file's, otherwise exit code 4; (2) *filter* — drop rows whose proposal ID is already in the ledger, and matched rows whose hash is in staging and still present; (3) *check each row* — both accounts open on its date, its currency declared on the source account and allowed on the other, postings in whole cents summing to exactly zero; for a matched row the search again, which must find exactly one candidate, the recorded entry, in an account with no orphaned claim; a row that fails is queued; (4) *render* the entries; the new content is the current owned file plus the entries; (5) *compare, then replace* — re-hash every ledger file; if any differs from step 1, stop with exit code 4 and write nothing; otherwise write the batch journal and make it durable, write a temporary file in the same directory and `fsync` it, then **exchange** it with the owned file in one atomic step (`renameat2` with `RENAME_EXCHANGE`) and `fsync` the directory. Never a plain rename: after the exchange the swapped-out content is hashed, and if it is not the content the batch was rendered from, a save got in, so the writer exchanges back, writes nothing and exits with code 4. The exchange back is checked the same way; if the file was saved again in between, every version is kept as a file beside the journal and the conflict is reported. A displaced version is never deleted. Where the exchange is unavailable, the writer refuses (exit 4). Then read-back and assertions, below. `match_existing`: nothing is created and nothing is written. |
+| **Writer** | `autobook init` creates the owned file with its header and prints the `include` line for the user to add. **Apply**, for a batch of approved rows: (1) *read* — re-hash every kept pre-image (a changed one is a displaced save), then load the ledger; the owned file must be among the loaded files, with root-name options matching the main file's, otherwise exit code 4; (2) *filter* — drop rows whose proposal ID is already in the ledger, and matched rows that already have an `applied_entry` still present (a matched row approved for the first time has only a `matched_entry` and goes on); (3) *check each row* — both accounts open on its date, its currency declared on the source account and allowed on the other, postings in whole cents summing to exactly zero; for a matched row the search again, which must find exactly one candidate, the recorded entry, in an account with no orphaned claim; a row that fails is queued; a batch with only matched rows skips (4) and (5), makes no journal or pre-image, and validates against the load of step 1; (4) *render* the entries; the new content is the current owned file plus the entries; (5) *compare, then replace* — re-hash every ledger file and every kept pre-image; if any differs from step 1, stop with exit code 4 and write nothing; otherwise write the batch journal and make it durable, write a temporary file in the same directory and `fsync` it, then **exchange** it with the owned file in one atomic step (`renameat2` with `RENAME_EXCHANGE`) and `fsync` the directory. Never a plain rename: after the exchange the swapped-out content is hashed, and if it is not the content the batch was rendered from, a save got in, so the writer exchanges back, writes nothing and exits with code 4. The exchange back is checked the same way; if the file was saved again in between, every version is kept as a file beside the journal and the conflict is reported. A displaced version is never deleted. Where the exchange is unavailable, the writer refuses (exit 4). Then read-back and assertions, below. `match_existing`: nothing is created and nothing is written. |
 | **Read-back** | Loads the ledger again after the replace. Every created row's proposal ID must appear exactly once, with the approved date, accounts and amounts. A matched row wrote nothing, so its ID is not looked for: its recorded entry must still be present, and the search, run again, must still find exactly one candidate: the recorded entry. A row is reported `applied` (in `apply-out`, and in staging) only after the read-back and every assertion have passed. |
 | **Assertions** | After the read-back: (a) the load reports no error that the first load did not report; (b) no byte of the owned file before the appended entries changed, and no other ledger file changed; (c) the balance of every account the batch wrote postings to moved by exactly the sum of those postings, and no other account's balance moved (a matched row writes none and moves nothing); (d) where the statement states a closing balance, the account's balance on the closing date equals that closing balance minus the statement lines not yet applied (queued, `out_of_scope`, pending transfer). **On any failure of the read-back or an assertion**, the writer restores the previous content of the owned file (only if the file still holds exactly what the replace wrote), exits with code 6 and marks nothing applied. |
 | **Undo** | Removes an entry only if its `autobook-id` is the proposal ID of a staged row with disposition `create` or `create_split` in that batch **and** the entry is in the owned file, asserting both before each removal. It removes exactly that entry's lines, through the same compare-then-replace and read-back as apply. An entry the user edited is still removed, with its differences listed before confirmation. Undo of a matched row changes staging only. |
@@ -788,7 +804,7 @@ what staging recorded, and proposal IDs that staging holds as applied but the
 ledger no longer contains. Both are reports, never writes: a missing entry is
 not silently created again.
 
-**No ledger lock; one writer lock.** Two Autobook runs are a different matter: both could pass the compare before either exchanges, and the second would overwrite the first. So `apply` and `undo` take Autobook's own **writer lock** (an advisory lock on a file beside the staging store, never in the ledger's directory) before the first read and hold it until staging is updated. A run that cannot take it writes nothing and exits with code 4. The lock binds Autobook only; editors and Fava do not know it.
+**No ledger lock; one writer lock.** Two Autobook runs are a different matter: both could pass the compare before either exchanges, and the second would overwrite the first. So `propose`, `apply`, `undo` and `decide` take Autobook's own **writer lock** (an advisory lock on a file beside the staging store, never in the ledger's directory) before the first read and hold it until staging is updated. A run that cannot take it writes nothing and exits with code 4. The lock binds Autobook only; editors and Fava do not know it.
 
 Against editors and Fava: Beancount has no lock. The guards are the compare before the
 replace on every ledger file, the single atomic exchange (`renameat2` with
@@ -856,7 +872,8 @@ editor or another program (proposal 0005 §4.2).
 | `autobook decide --from FILE` | Parse a saved review file and record its decisions to staging; `--check` parses only | read (account list) |
 | `autobook apply --from FILE` | `decide`, then book the approved rows: write, read back, assert | **write** |
 | `autobook undo BATCH` | Remove what a batch created; asks for confirmation unless `--yes` | **write** |
-| `autobook status` | Last run, pending counts, the version tuple in force, entries that differ from staging | read |
+| `autobook forget PATH` | Remove the staging record of a pre-image the user has deleted; refuses while the file exists | writes staging (under the writer lock) |
+| `autobook status` | Last run, pending counts, the version tuple in force, entries that differ from staging, kept pre-images whose content changed. | read |
 | `autobook export` | Print the reader's contracts (`coa`, `corpus`, `existing`), for inspection and for the trial | read |
 | `autobook trial backtest …` | Rolling-origin backtest | read |
 | `autobook trial mine` | Mine rule candidates from history (proposal 0004) | read |
@@ -873,7 +890,7 @@ Exit codes (proposal 0005 §4.3):
 | 3 | The batch gate or the version gate refused | nothing |
 | 4 | The ledger is not writable as expected: the owned file is not included, its root-name options differ from the main file's, a ledger file changed during the run, or another Autobook run holds the writer lock | nothing |
 | 5 | The review file did not parse; the line number is on standard error | nothing |
-| 6 | The read-back or an assertion failed; the previous file was restored | nothing persists |
+| 6 | The read-back or an assertion failed; the previous file was restored | no ledger file changes (every included file byte-identical); the rejected batch is kept as a pre-image beside the owned file and recorded in staging |
 | 7 | A statement was rejected at admission; the reason is reported per file | nothing staged from that statement |
 
 The numbering is fixed when the first command that returns 3–7 lands.

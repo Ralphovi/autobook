@@ -69,13 +69,16 @@ protects the ledger instead is in 6.5: nothing is written if any ledger file
 changed since it was read, the owned file is replaced by one checked atomic
 exchange that puts back a save that got in at the last moment, and
 a failed read-back puts the previous content back. Between two Autobook runs
-there is a lock: `apply` and `undo` hold Autobook's own writer lock from the
-first read until staging is updated, and a run that cannot take it writes
+there is a lock: `propose`, `apply`, `undo` and `decide` hold Autobook's own writer lock from
+before they parse the review file or read the ledger until staging is updated, and a run that cannot take it writes
 nothing (exit 4).
 
 ## 6.2 Admitting a statement
 
-Admission is the first thing `autobook propose` does with each OFX file.
+Before admitting anything, `autobook propose` takes the writer lock and re-hashes the kept
+pre-images; a changed or missing one stops it with exit code 4, because the ledger is then
+missing a displaced save and would be incomplete history to match and classify against.
+Admission is then the first thing `autobook propose` does with each OFX file.
 
 1. Compute the file's checksum. A file already recorded in `statements` as
    **admitted** changes nothing: handing over the same file twice is harmless.
@@ -141,8 +144,10 @@ currency that the account's `open` directive does not allow, or confidence below
 threshold → `queue`. Before any `create`, the row's **source** account is
 searched within ±5 days for a posting of the same amount and currency in an entry that
 is not already claimed for that source account: unique → `match_existing`;
-ambiguous → `queue`. An entry is **claimed for a source account** when a staged
-row of that account created it or matched it. An `autobook-id` (the metadata
+ambiguous → `queue`. An entry is **claimed for a source account** when
+another staged row of that account, still pending, approved or applied, created
+it or matched it; a row's own `matched_entry` never excludes its own candidate,
+and a rejected or skipped row releases its claim. An `autobook-id` (the metadata
 key under which a created entry holds its proposal ID) does not by itself
 exclude an entry: the second side of a transfer matches the entry the first
 side created. A hand-written entry is identified by its **content hash**. The content hash covers the entry's date, flag, payee,
@@ -184,8 +189,11 @@ stays in staging only.
 
 ## 6.5 Applying a batch, and recovering from a crash
 
-`autobook apply --from FILE` first does what `decide` does (6.1, step 5). The
-writer then books the approved rows in eight steps (§10.3). A batch is booked
+`autobook apply --from FILE` first takes the writer lock (step 0), recovers any
+journal and checks the kept pre-images (see *Recovery*), and only then does what
+`decide` does (6.1, step 5) and books the approved rows (§10.3). A run that
+cannot take the lock, or refuses in recovery or the pre-image check, changes
+nothing, staging included. A batch is booked
 whole or not at all.
 
 0. **Lock.** Take the writer lock, an advisory lock on a file beside the staging
@@ -194,20 +202,30 @@ whole or not at all.
 1. **Read.** Load the ledger: its errors, the accounts, the existing Autobook
    IDs, and the SHA-256 of every loaded file. The owned file must be among
    them, and its root-name options (`name_assets` … `name_expenses`) must match
-   the main file's. Otherwise: exit code 4, nothing written.
+   the main file's, and every kept pre-image must still have its recorded hash
+   (a changed one is a displaced save). Otherwise: exit code 4, nothing
+   written.
 2. **Filter.** Drop `create` rows whose proposal ID is already in the ledger.
    Only a value in `autobook-id` that matches the proposal-ID pattern counts.
-   Drop `match_existing` rows whose content hash is in staging and still
-   present in the ledger.
+   Drop `match_existing` rows that already have an `applied_entry` still
+   present in the ledger. A matched row approved for the first time has only a
+   `matched_entry` and goes on to step 3.
 3. **Check each row.** Both accounts are open on its date; its currency is
    declared on the source account and allowed on the other; its postings are in
    whole cents and sum to exactly zero. For a matched row, the search is run
-   again: exactly one candidate must remain, the recorded entry, in an account
+   again: exactly one candidate must remain, the row's `matched_entry`, in an account
    with no orphaned claim. A row that fails is queued, and the batch goes on without it.
+   **A batch with no created rows** (only matched rows) writes nothing: steps
+   4 and 5 are skipped, no journal or pre-image is made, and the ledger is
+   loaded again and steps 6 and 7 run against that fresh load, immediately
+   before staging is updated — the search must still find each row's
+   `matched_entry`, and no ledger file and no kept pre-image may have changed
+   since step 1. A failure marks nothing applied; there is nothing to restore.
 4. **Render** the entries. Every posting carries an explicit amount, built from
    integer cents and printed with two decimals. The new content is the current
    owned file plus the entries.
-5. **Compare, then replace.** Hash every file again. If any differs from step
+5. **Compare, then replace.** Hash every file again, the kept pre-images
+   included. If any differs from step
    1, stop: exit code 4, nothing written. Otherwise write the batch journal and
    make it durable (see *Recovery*), then write a temporary file in the same
    directory, `fsync` it, **exchange** it with the owned file in one atomic
@@ -226,6 +244,9 @@ whole or not at all.
    - The load reports no error that step 1 did not report.
    - No byte of the owned file before the appended entries changed, and no
      other file changed.
+   - Every kept pre-image, this batch's included, still has its recorded hash.
+     This is the last check before the rows are marked applied; a mismatch is
+     a save that got into an old file and rolls the batch back.
    - The balance of every account the batch wrote postings to moved by exactly
      the sum of those postings, and no other account's balance moved. A matched
      row writes no posting and moves nothing.
@@ -235,11 +256,15 @@ whole or not at all.
 8. **On any failure in 6 or 7,** restore the previous content — only if the
    owned file still holds exactly what step 5 wrote — exit with code 6, and
    mark nothing applied.
+   The restore is the checked exchange back; afterwards the pre-image path
+   holds the rejected batch, and staging records it as such (`preimages.kind
+   = rejected`, with that content's hash), so it is kept like any other
+   displaced version but is not mistaken for a displaced save.
 
 The writer reports `{proposal_id, entry, status}` per row and the assertion
 results per batch (the `apply-out` contract, section 5.1). A row is `applied`
-in staging only after step 7 has passed. For a created row, `applied_entry`
-records the proposal ID; for a matched row, the content hash. Nothing is
+in staging only after step 7 has passed. Only then is `applied_entry` set: for a created row
+the proposal ID, for a matched row the `matched_entry` found at proposal. Nothing is
 written to a matched entry.
 
 Two details of the checks:
@@ -268,14 +293,24 @@ account. It is removed only after staging is updated.
 
 **Durability.** A journal that can be lost while the exchange survives is no
 journal. The order is: write the journal and `fsync` it and its directory;
-write the temporary file and `fsync` it; exchange; `fsync` the owned file's
-directory. The journal's removal is likewise followed by an `fsync` of its
+write the rendered content to a scratch file (`.autobook-tmp-<ULID>`) and
+`fsync` it; rename it to its final pre-image name, which the journal records,
+and `fsync` the owned file's directory — so the final name only ever holds the
+complete rendered content; exchange; `fsync` the owned file's directory again.
+A scratch file left by a crash holds only content Autobook rendered and never
+reached the ledger, so recovery removes it. The journal's removal is likewise followed by an `fsync` of its
 directory, after staging has committed.
 
-Every `apply` and `undo` first looks for a journal, under the writer lock:
+Every `propose`, `apply` and `undo` first looks for a journal, under the writer lock. `propose` refuses (exit 4) while one exists, so it never classifies against an unvalidated batch; `apply` and `undo` recover it. Every `apply` and `undo` first looks for a journal, under the writer lock:
 
-- The owned file has the journal's *before* hash: the replace never happened.
-  The journal is discarded and the batch is applied from the start.
+- The owned file has the journal's *before* hash: either the exchange never
+  happened, or the batch was exchanged back after a failed check. Before the
+  journal is discarded, the file at the journal's pre-image path, if it
+  exists, is checked: if it holds exactly the content the batch rendered (the
+  journal's *after* hash), it is recorded in staging (`kind = rejected`). If it
+  holds anything else, an editor saved into it: Autobook records nothing,
+  keeps the journal and the file, and exits with code 4 for the user to
+  resolve. It is never deleted. Then the batch is applied from the start.
 - It has the *after* hash: the batch was written and never validated. First
   the swapped-out file at the journal's temporary path is checked. If it is
   not the owned file's previous content, a save got in just before the

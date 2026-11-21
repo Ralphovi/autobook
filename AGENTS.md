@@ -162,7 +162,17 @@ one does not produce an error — it produces a wrong ledger.
 - **Compare before replacing.** Nothing is written if any ledger file changed
   since it was read. The replace is one atomic **exchange** (`renameat2` with
   `RENAME_EXCHANGE`) with a file written and flushed in the same directory,
-  never a plain rename: after the exchange, hash what was swapped out, and if
+  never a plain rename. The swapped-out file is never deleted and never renamed:
+  the temporary file is given its final, operation-unique pre-image name
+  beside the owned file before the exchange, it and its directory are fsynced
+  before the exchange, the journal names it, and its
+  path, batch and hash are recorded in staging (`preimages`) before the
+  journal is removed, and `autobook status` reports one whose
+  content changed since (an editor that still held the old file open). Autobook
+  has no command that deletes a pre-image; the user deletes them by hand and
+  then runs `autobook forget PATH`, which removes only the staging record and
+  refuses while the file still exists.
+  Also: after the exchange, hash what was swapped out, and if
   it is not the content the batch was rendered from, exchange back and write
   nothing. Exchanging back is checked the same way; if the file was saved
   again in between, keep every version as a file, stop and report the
@@ -170,9 +180,10 @@ one does not produce an error — it produces a wrong ledger.
   the last hash. No fallback to a plain rename where the exchange is
   unavailable: refuse. Beancount has no lock; against editors and
   Fava this is the guard.
-- **One Autobook writer at a time.** `apply` and `undo` take Autobook's own
-  writer lock (an advisory lock on a file beside the staging store, never in
-  the ledger's directory) before the first read and hold it until staging is
+- **One Autobook writer at a time.** `propose`, `apply`, `undo` and `decide` take
+  Autobook's own writer lock (an advisory lock on a file beside the staging
+  store, never in the ledger's directory) before they parse the review file or
+  record any decision, and before the first read of the ledger, and hold it until staging is
   updated. Without it, two runs can both pass the compare and the second
   overwrites the first. A run that cannot take the lock writes nothing.
 - **Read back, then report.** After the replace, load the ledger again. A row
@@ -210,8 +221,10 @@ one does not produce an error — it produces a wrong ledger.
   anything else belongs to the user.
 - **`autobook-id` only on entries Autobook creates.** A created entry carries
   its proposal ID in `autobook-id`. On a `match_existing` row Autobook writes
-  nothing to the ledger; staging records the matched entry in `applied_entry`:
-  its `autobook-id` if it has one, otherwise its content hash.
+  nothing to the ledger. Staging records the candidate found at proposal in
+  `matched_entry` (its `autobook-id` if it has one, otherwise its content hash)
+  and copies it to `applied_entry` only after the batch is validated.
+  `applied_entry` means validated, never merely proposed.
 - **`match_existing` searches the row's source account**, not the target
   account, for a posting with the row's amount **and currency** (an account
   may hold several currencies; the number alone is not a match), and its candidates are entries not already claimed **for that
@@ -221,6 +234,22 @@ one does not produce an error — it produces a wrong ledger.
   first side created. An ambiguous or
   absent match is queued; never guess between candidates. Do not filter on
   whether the user has asserted a balance since.
+- **A pending match claims too.** An entry is claimed by another row's
+  `matched_entry` from proposal on, while that row is `pending`, `approved` or
+  `applied` (a row never excludes its own candidate; a rejected or skipped row
+  releases its claim), not only by a validated `applied_entry`,
+  so two pending rows can never select the same entry.
+- **A live journal blocks `propose`.** `propose` refuses while a batch journal
+  exists, so it never matches or classifies against a batch that was written
+  but not validated; `apply` or `undo` recover it first.
+- **A changed pre-image blocks writing.** `propose`, `apply` and `undo` re-hash every
+  kept pre-image first, again in the compare before the exchange and again as
+  the last assertion before rows are marked applied (matched-only batches
+  too), and refuse while one differs from its recorded hash or is missing
+  without having been forgotten:
+  that is a displaced save the owned file does not contain.
+- **A batch with only matched rows writes nothing.** No render, no exchange,
+  no journal, no pre-image; it is validated against the unchanged load.
 - **A claim outlives an edit.** If a matched hand-written entry's hash is no
   longer in the ledger, its claim becomes an orphaned claim, and matching is
   paused for that whole source account: every line that would match there is
@@ -241,7 +270,18 @@ one does not produce an error — it produces a wrong ledger.
   baseline the assertions need: proposal IDs, the hash of every loaded file,
   the owned file's hash after the replace and its previous content, the path
   holding the swapped-out content after the exchange, the first load's errors,
-  and every account's balance. A run that finds a journal first
+  and every account's balance. Before it ever discards a journal, a run
+  records the file at the journal's pre-image path in staging, after checking
+  it holds the content it must: the owned file's previous content when the
+  exchange was kept, or the batch's rendered content when the exchange never
+  happened or was undone. Anything else is a displaced save: keep the journal
+  and refuse. The final pre-image name is given only to a complete, fsynced
+  file (write a scratch file, then rename), so a crash never leaves a partial
+  file under that name.
+- **Preflight before decisions.** `apply` takes the lock, recovers any
+  journal and checks the kept pre-images before it parses the review file or
+  records any decision, so a refusal leaves staging unchanged. A run that
+  finds a journal first
   checks the swapped-out file: if it is not the previous content, a save got in
   just before the exchange, so exchange back and mark nothing applied. Only
   then does it validate that batch against the journal's baseline, never against the
@@ -380,7 +420,11 @@ hands over OFX files.
   Saving the file is the user's approval of every row marked `a` in it. Nothing
   reaches the ledger that was not marked `a` in the saved review file, with
   exactly the account, amount, currency and date shown there. Every row shows
-  its currency.
+  its currency, and a split row shows every posting it will book, with the sign
+  it gets in the ledger, each on a line carrying the row's ID and a posting
+  number, the source posting included. Destination accounts may be
+  changed and are checked against the live chart of accounts; amounts and the
+  source account may not.
 - **Parse by ID, never by position.** Reordering, deleting, or sorting the review
   file must not misalign rows. An unknown ID is an error, not a guess.
 - **Strict parser, fail loudly.** Unknown status char, unparseable account, or

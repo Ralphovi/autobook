@@ -67,10 +67,11 @@ and the ID in the ledger settles it.
 
 A `match_existing` row writes nothing at all: the matched entry is in a file
 Autobook does not own. A hand-written entry has no permanent identifier, so
-staging records it in `applied_entry` by its **content hash** — Beancount's
+staging records the candidate found at proposal in `matched_entry` by its **content hash** — Beancount's
 `hash_entry` with `exclude_meta=True`, over date, flag, payee, narration, tags,
-links and postings, stable when the entry moves in its file. A re-run drops a
-matched row whose hash is in staging and still present in the ledger.
+links and postings, stable when the entry moves in its file. `applied_entry` is set from it only after the batch is
+validated, and a re-run drops a matched row whose `applied_entry` is still
+present in the ledger.
 
 A row counts as `applied` only after the **read-back** (the ledger is loaded
 again; every created row's proposal ID appears exactly once, with the approved
@@ -110,8 +111,8 @@ Failures are classified by granularity and never mixed:
 | Batch, after writing | The read-back does not find every created row's proposal ID exactly once as approved, or a matched row's entry is gone; the load reports a new error; a byte before the appended entries or another file changed; an account's balance did not move by exactly the sum of the postings written to it; the closing-balance check fails | The previous content of the owned file is restored, nothing is marked applied (exit 6) |
 
 The second batch tier is what makes "whole or not at all" hold after the
-replace: the writer keeps the previous content until the assertions pass and
-restores it on any failure, provided the file still holds exactly what the
+replace: the writer keeps the previous content as a pre-image, for good (only the user
+deletes it), and exchanges it back on any failure, provided the file still holds exactly what the
 writer wrote (section 6.5). No failure leaves a partial batch. A ledger that
 already has errors can still be booked into; only a *new* error rolls a batch
 back.
@@ -201,14 +202,15 @@ There are no storage backends to tell apart and no SQL against a ledger. (The
 staging store is a different thing: SQLite by default, a PostgreSQL URI as an
 option.)
 
-There is no backup step. The writer keeps the previous content of the owned
-file for the duration of the run and restores it when the read-back or an
-assertion fails. Keeping the ledger in git is recommended, never required. The
+There is no backup step. The previous content of the owned file is kept for
+good, as a pre-image beside it that only the user deletes, and is exchanged
+back when the read-back or an assertion fails. Keeping the ledger in git is recommended, never required. The
 real safety net is batch reversibility by proposal ID.
 
 Beancount has no lock, so against editors and Fava there is none to take or
-respect. Between Autobook runs there is one: `apply` and `undo` hold Autobook's
-own writer lock from the first read until staging is updated, because two runs
+respect. Between Autobook runs there is one: `propose`, `apply`, `undo` and `decide` hold Autobook's
+own writer lock from before they parse the review file, record a decision or
+read the ledger until staging is updated, because two runs
 could otherwise both pass the compare and the second overwrite the first. The
 other guards are
 compare-before-write on every ledger file (each file's SHA-256 is taken at read
