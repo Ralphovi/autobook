@@ -187,8 +187,11 @@ recorded and no line staged, if:
   resolve (proposal 0002 §3.4).
 
 Every statement gets a `statements` row, keyed by the checksum of the OFX file,
-so handing over the same file twice changes nothing. A statement that fails
-admission is recorded with status `rejected` and its reason; `propose` exits
+so handing over a file that was already **admitted** changes nothing. A
+statement that fails admission is recorded with status `rejected` and its
+reason, and is checked again from the start when it is handed over again: a
+rejection for a reason outside the file (an account ID missing from the
+configuration) must not block the file for good. `propose` exits
 with code 7 and reports the reason per file. Other statements in the same call
 are admitted on their own merits.
 
@@ -567,10 +570,14 @@ One candidate: nothing is created, and staging records the matched entry's
 never guesses.
 
 Nothing is written to a matched entry; it is in a file Autobook does not own.
-If the user later edits a matched entry, its hash changes and the claim is
-lost. The staged row stays `applied`, so nothing is proposed twice; the entry
-becomes a candidate again, and a later line that then finds more than one
-candidate is queued (proposal 0005 §8.2 and *Risks*).
+If the user later edits a matched hand-written entry, its hash changes and the
+staged row no longer finds its entry. The claim is not dropped: it becomes an
+*orphaned claim*, holding the row's source account, amount, currency and date.
+While it exists, a line of that amount and currency in that account within the
+window of the orphaned row's date is queued ("a matched entry changed"), never
+matched. `autobook status` lists orphaned claims, and the orphaned row returns
+to the review file as `?` for the user to point at its entry again (proposal
+0005 §8.2).
 
 ### Batch gate
 
@@ -592,11 +599,12 @@ be private to the user and short-lived. Each row has a status: `a` accept, `?`
 needs a decision, `s` skip, `x` reject (recorded as a negative example). Rows
 that passed the gates are pre-marked `a`; everything else is `?`. **Saving the
 file is the user's approval of every row marked `a` in the saved file**, with
-the account, amount and date shown. Nothing else reaches the ledger.
+the account, amount, currency and date shown. Every row shows its currency.
+Nothing else reaches the ledger.
 
 The file is parsed back **by ID, never by position**, strictly: an unknown ID,
 an unknown status character, an account that is not open in the ledger or an
-amount that differs from staging aborts the whole parse with a line number
+amount or currency that differs from staging aborts the whole parse with a line number
 (exit code 5) and applies nothing. A row with a weak bill match carries a hint
 line, nothing more. What was proposed and what was saved are both recorded per
 row; corrections are recorded as `corrected` corpus rows. `autobook decide`

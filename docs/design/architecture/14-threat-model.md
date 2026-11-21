@@ -80,7 +80,8 @@ driver hands over.
 | A line matches a posting with the same number in another currency, on an account that holds several | Integrity, accidental | `match_existing` requires amount and currency to be equal, in the candidate search and again in the read-back |
 | A matched entry is moved outside the date window, or otherwise stops qualifying, between proposal and apply | Integrity, accidental | The whole match predicate (source account, amount, currency, date window, claim) is evaluated again at apply and in the read-back; a row whose entry no longer qualifies is queued |
 | A transfer booked twice across two batches | Integrity, accidental | Source-account `match_existing` before classification; `transfers_pending`; an unmatched second side queues |
-| A matched entry edited afterwards loses its claim, and a later line with the same amount matches it | Integrity, accidental | The staged row stays `applied`, so nothing is proposed twice; more than one candidate queues the line; the closing-balance check catches it where a balance is stated. Residual, see 14.4 |
+| A matched entry is edited afterwards, and a later line with the same amount and currency would match it as its only candidate | Integrity, accidental | The claim is kept as an orphaned claim: such a line is queued, never matched, until the user points the orphaned row at its entry again; `autobook status` lists orphaned claims |
+| The review file shows a bare number and the user approves the wrong currency on an account that holds several | Integrity, accidental | Every review row shows its currency; the strict parser rejects a currency that differs from staging |
 | Undo deletes an entry the user wrote | Integrity, accidental | Undo removes an entry only when its `autobook-id` is the proposal ID of a row staged as `create` or `create_split` in that batch **and** the entry is in the owned file; both are asserted first. Nothing is ever written to a matched entry |
 | Autobook changes something the user wrote | Integrity, accidental | Structural: it writes transactions only, into the owned file only, by appending; on undo it removes exact spans; the assertion "no byte before the appended entries changed, and no other file changed" checks it on every apply |
 | An OFX file that is wrong but self-consistent: the conversion dropped a line and the balances still add up, or the file states no balances | Integrity, accidental | Balance check on admission and the closing-balance assertion after writing, both only where the statement states balances; elsewhere only the user's own `balance` assertions. Autobook does not second-guess a well-formed statement. Residual, see 14.4 |
@@ -116,8 +117,8 @@ driver hands over.
 - **A wrong but self-consistent statement.** Autobook sees only the OFX file.
   Where it states no balances, nothing at admission or after writing can detect
   a missing line.
-- **A matched entry edited afterwards.** Two payments could become one entry and
-  the account be short by one, where no closing balance is stated.
+- **A matched entry edited afterwards.** Its claim is kept as an orphaned claim,
+  which queues later lines until the user resolves it; this costs a manual step.
 - **A remote model backend sees allowlisted business-name tokens, account
   indices, amounts and signs.** Accepted when the user opts in; shown to the
   user exactly; avoided by the default local backend or no-AI mode.

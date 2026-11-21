@@ -149,6 +149,8 @@ one does not produce an error — it produces a wrong ledger.
   matched entry — no metadata, no link, no tag.
 - **Never regenerate the owned file.** The user and Fava may edit entries in
   it. Append; on undo remove exact spans.
+- **Only an admitted statement is skipped on its checksum.** A rejected one is
+  checked again when handed over again.
 - **A statement is admitted whole or not at all.** A statement that fails any
   admission check (parse, a line without date, amount or currency, an unknown
   account ID, a currency the ledger account does not declare, lines that do not
@@ -212,6 +214,11 @@ one does not produce an error — it produces a wrong ledger.
   first side created. An ambiguous or
   absent match is queued; never guess between candidates. Do not filter on
   whether the user has asserted a balance since.
+- **A claim outlives an edit.** If a matched hand-written entry's hash is no
+  longer in the ledger, its claim becomes an orphaned claim. A later line of
+  the same amount and currency in that account within the window is queued,
+  never matched, until the user resolves the orphan. Dropping the claim would
+  let two payments become one entry.
 - **A matched hand-written entry is identified by its content hash**, excluding
   metadata and file position. Never by file and line: both move whenever anything above the
   entry is edited.
@@ -361,11 +368,12 @@ hands over OFX files.
   with rows that passed the gates pre-marked `a` and every other row `?`.
   Saving the file is the user's approval of every row marked `a` in it. Nothing
   reaches the ledger that was not marked `a` in the saved review file, with
-  exactly the account, amount and date shown there.
+  exactly the account, amount, currency and date shown there. Every row shows
+  its currency.
 - **Parse by ID, never by position.** Reordering, deleting, or sorting the review
   file must not misalign rows. An unknown ID is an error, not a guess.
 - **Strict parser, fail loudly.** Unknown status char, unparseable account, or
-  amount mismatch aborts the whole batch with a line number and applies nothing.
+  amount or currency mismatch aborts the whole batch with a line number and applies nothing.
   Validate accounts against the live CoA at parse time so a typo stops the run
   instead of reaching the writer.
 
@@ -427,7 +435,8 @@ When a defect class recurs, it graduates to a gate and drops out of review scope
   the batch in the ledger; a refusal that changes a ledger file.
 - *Admission*: a statement partly admitted; a line staged from a rejected
   statement; a rejection without a recorded reason; a statement "repaired"
-  instead of rejected; the same file admitted twice.
+  instead of rejected; the same file admitted twice; a rejected file refused on its checksum
+  without being checked again.
 - *Idempotency*: a path that can create an entry twice after a crash between
   "file replaced" and "marked applied"; an interrupted batch marked applied
   because its IDs are in the ledger, without the journal's read-back and

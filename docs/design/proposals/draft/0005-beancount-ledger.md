@@ -266,8 +266,11 @@ reason recorded and no line staged, if:
 - its period overlaps an admitted statement in a way the overlap rule cannot
   resolve (proposal 0002 §3.4).
 
-Admission records a `statements` row with the file's checksum, so handing over
-the same file twice changes nothing.
+Every decision is recorded in `statements` with the file's checksum. Handing
+over a file that was already **admitted** changes nothing. A file that was
+**rejected** is checked again from the start, so a statement rejected for a
+reason outside the file (an account ID missing from the configuration, an
+account not yet opened in the ledger) is admitted once that is fixed.
 
 **Dedup.** A line is identified within its source account by the bank's ID
 when the configuration says the IDs are bank-supplied. Otherwise the ID is
@@ -447,9 +450,14 @@ finds it, matches it once, and claims it for B. An `autobook-id` alone does
 not make an entry unavailable.
 
 If the user later edits a matched hand-written entry, its hash changes and the
-claim is lost. The staged row stays `applied`, so nothing is proposed twice; the entry
-becomes a candidate again, and a second line that then finds more than one
-candidate is queued. See *Risks*.
+staged row no longer finds its entry. The claim is **not** dropped: it becomes
+an *orphaned claim*, which still holds the row's source account, amount,
+currency and date. While it exists, no line may match a posting of that amount
+and currency in that account within the window of the orphaned row's date; such
+a line is queued with the reason "a matched entry changed". `autobook status`
+lists orphaned claims, and the orphaned row returns to the review file as `?`,
+where the user points it at its entry again. Otherwise the edited entry would
+be a later line's only candidate and two payments would become one entry.
 
 ### 9. Trial and production
 
@@ -715,22 +723,23 @@ across accounts, which is why correlation lives there.
 Plain text, in the idiom of `git rebase -i`:
 
 ```
-# id      st  date        amount    account                    description
+# id      st  date        amount        account                    description
 #   knn: Lebensmittel .81 | Haushalt .07
-a1f3e9    a   2026-07-14   -42,90   Ausgaben:Lebensmittel      REWE SAGT DANKE
-9de441    ?   2026-07-16   -18,50   Ausgaben:Freizeit          PAYPAL .VENDORX
+a1f3e9    a   2026-07-14   -42,90 EUR   Ausgaben:Lebensmittel      REWE SAGT DANKE
+9de441    ?   2026-07-16   -18,50 EUR   Ausgaben:Freizeit          PAYPAL .VENDORX
 ```
 
 Status: `a` accept, `?` needs a decision, `s` skip, `x` reject (recorded as a
 negative example). Change an account by typing over it. Rows that passed the
 gates are pre-marked `a`; everything else is `?`.
 
-- **Saving is approving** every row marked `a`, with the account, amount and
-  date shown.
+- **Saving is approving** every row marked `a`, with the account, amount,
+  currency and date shown. Every row shows its currency: an account may hold
+  several, and a bare number would hide which one is being approved.
 - **Parse by ID, never by position.** Reordering or deleting rows must not
   misalign anything. An unknown ID is an error.
 - **Strict parser.** An unknown status, an account that is not open in the
-  ledger, or an amount that differs from staging aborts the whole file with a
+  ledger, or an amount or currency that differs from staging aborts the whole file with a
   line number (exit 5) and applies nothing.
 - The difference between what was proposed and what was saved is the training
   signal; both are recorded per row.
@@ -993,7 +1002,9 @@ like any other group and mostly become creditor-ID rules.
    stratum, with token-Bayes as the control (the premise test, and proposal
    0004's R1).
 4. **Step 3, admission** — by test: each rejection reason in §5 rejects the
-   whole statement and stages nothing; the same file twice changes nothing.
+   whole statement and stages nothing; an admitted file handed over again
+   changes nothing; a file rejected for an unconfigured account is admitted
+   after the configuration is fixed.
 5. **Step 5, the writer** — by test, on synthetic ledgers:
    - a batch with one row that fails the reload leaves every file
      byte-identical;
@@ -1007,6 +1018,8 @@ like any other group and mostly become creditor-ID rules.
      run restores the previous content and marks nothing applied;
    - a matched entry moved outside the date window between proposal and apply:
      the row is queued, not marked applied;
+   - a matched hand-written entry is edited: a later line with the same amount
+     and currency in the window is queued, not matched to it;
    - a change to any ledger file between read and replace stops the write;
    - a batch holding one created row and one matched row applies: the matched
      row's ID is not required in the ledger and its amount is not counted as
@@ -1040,10 +1053,11 @@ What misreports silently if this is subtly wrong:
   unsaved changes when Autobook replaces it, the editor decides what happens
   on save. One that does not warn would overwrite the batch. `status` and the
   next run report the missing IDs; nothing is re-created silently.
-- **A matched entry edited afterwards.** The claim is lost (§8.2), and a later
-  line with the same amount in the window could match it. Two payments would
-  then be one entry and the account short by one. The closing-balance check
-  catches it where a balance is stated.
+- **A matched entry edited afterwards.** Its claim becomes an orphaned claim
+  (§8.2), which blocks later lines of the same amount and currency in the
+  window until the user resolves it. If that rule were skipped, two payments
+  could become one entry and the account be short by one; the closing-balance
+  check would catch it only where a balance is stated.
 - **Tolerance.** If the exact-sum check were skipped on some path, Beancount
   would accept a half-cent error.
 - **Conversion decisions.** A wrong choice for securities or zero-amount

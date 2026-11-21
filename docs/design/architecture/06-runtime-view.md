@@ -76,8 +76,10 @@ nothing (exit 4).
 
 Admission is the first thing `autobook propose` does with each OFX file.
 
-1. Compute the file's checksum. A file whose checksum is already in
-   `statements` changes nothing: handing over the same file twice is harmless.
+1. Compute the file's checksum. A file already recorded in `statements` as
+   **admitted** changes nothing: handing over the same file twice is harmless.
+   A file recorded as **rejected** goes through every step again, so that a
+   rejection for a reason outside the file can be cleared.
 2. Parse the file with Autobook's own OFX parser (standard library only). It
    reads the account ID, the currency, the statement period, the ledger
    balance, and per line the ID, date, amount, name and memo. The memo is taken
