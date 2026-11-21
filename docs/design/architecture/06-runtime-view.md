@@ -66,7 +66,8 @@ nothing to the ledger, so shadow mode is the default state.
 There is no lock and no ordering between Autobook and other programs. The
 ledger is text files; an editor or Fava may have them open during a run. What
 protects the ledger instead is in 6.5: nothing is written if any ledger file
-changed since it was read, the owned file is replaced by one atomic rename, and
+changed since it was read, the owned file is replaced by one checked atomic
+exchange that puts back a save that got in at the last moment, and
 a failed read-back puts the previous content back. Between two Autobook runs
 there is a lock: `apply` and `undo` hold Autobook's own writer lock from the
 first read until staging is updated, and a run that cannot take it writes
@@ -209,7 +210,10 @@ whole or not at all.
 5. **Compare, then replace.** Hash every file again. If any differs from step
    1, stop: exit code 4, nothing written. Otherwise write the batch journal and
    make it durable (see *Recovery*), then write a temporary file in the same
-   directory, `fsync` it, rename it over the owned file, and `fsync` the
+   directory, `fsync` it, **exchange** it with the owned file in one atomic
+   step (`renameat2` with `RENAME_EXCHANGE`), check that what was swapped out
+   is exactly the content the batch was rendered from (otherwise exchange back,
+   so the saved edit is in place again, and exit 4), and `fsync` the
    directory. The journal keeps the
    previous content until step 7 has passed and staging is updated.
 6. **Read back.** Load the ledger again.

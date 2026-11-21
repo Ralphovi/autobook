@@ -160,8 +160,13 @@ one does not produce an error — it produces a wrong ledger.
   restores the previous content of the owned file and marks nothing applied.
   There is no partial batch.
 - **Compare before replacing.** Nothing is written if any ledger file changed
-  since it was read. The replace is one atomic rename of a file written and
-  flushed in the same directory. Beancount has no lock; against editors and
+  since it was read. The replace is one atomic **exchange** (`renameat2` with
+  `RENAME_EXCHANGE`) with a file written and flushed in the same directory,
+  never a plain rename: after the exchange, hash what was swapped out, and if
+  it is not the content the batch was rendered from, exchange back and write
+  nothing. A plain rename would silently overwrite a save that got in after
+  the last hash. No fallback to a plain rename where the exchange is
+  unavailable: refuse. Beancount has no lock; against editors and
   Fava this is the guard.
 - **One Autobook writer at a time.** `apply` and `undo` take Autobook's own
   writer lock (an advisory lock on a file beside the staging store, never in
@@ -430,7 +435,7 @@ When a defect class recurs, it graduates to a gate and drops out of review scope
   file; a write to any file but the owned file; any directive but a
   transaction; a write to an entry Autobook did not create; the owned file
   regenerated instead of appended to; a replace without the compare, or one
-  that is not a single atomic rename; a row reported applied without a
+  that is a plain rename instead of a checked exchange; a row reported applied without a
   read-back and the assertions; a failed read-back or assertion that leaves
   the batch in the ledger; a refusal that changes a ledger file.
 - *Admission*: a statement partly admitted; a line staged from a rejected

@@ -39,7 +39,7 @@ What differs is who calls it and whether anything is written:
 No sequencing with other programs is needed, because nothing holds a lock on a
 Beancount ledger. An editor or Fava may be open during a run. The writer's
 guards — compare every ledger file before writing, replace the owned file by
-one atomic rename, read back, restore on failure — are described in section
+one checked atomic exchange (Linux `renameat2`), read back, restore on failure — are described in section
 6.5.
 
 The ledger and the staging store belong together: staging records what was
@@ -121,10 +121,12 @@ a copy of one, is opened only by a human, attended.
 
 Linux first: it is where the gate and the reference deployment run.
 
-macOS and Windows are no longer ruled out by a dependency. Beancount publishes
-wheels for both, and nothing in the package needs a system library. They are
-possible and unverified: no test runs there, and no support is claimed. What
-would have to be checked before that changes includes the secret store (the
-Secret Service is a Linux desktop service), the configuration and data paths
-(the XDG directories), and that replacing the owned file by rename behaves on
-those file systems as it does on Linux.
+macOS and Windows are not ruled out by a dependency: Beancount publishes wheels
+for both. The **writer** is Linux-only for now, because it replaces the owned
+file by an atomic exchange (`renameat2` with `RENAME_EXCHANGE`) and refuses
+rather than fall back to a plain rename (section 6.5). macOS has an equivalent
+(`renamex_np` with `RENAME_SWAP`); Windows has none that is known to fit. The
+reader, the trial and the backtest have no such requirement. What else would
+have to be checked includes the secret store (the Secret Service is a Linux
+desktop service) and the configuration and data paths (the XDG directories).
+No support beyond Linux is claimed.

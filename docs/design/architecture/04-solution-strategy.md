@@ -21,7 +21,7 @@ tags:
 | | Money as integer cents end to end; `Decimal` built from integers, never from a float, and printed with exactly two decimals. | section 8.1 |
 | | Every posting carries an explicit amount, and Autobook checks itself that postings sum to exactly zero, because Beancount's own check is tolerant. | section 8.1 |
 | | Idempotency through the proposal ID in the `autobook-id` metadata of each entry Autobook creates, and the staged content hash of each matched one: re-running any batch after any crash is safe. | sections 6.5, 8.2 |
-| | Compare, then replace: nothing is written if any ledger file changed since it was read, and the replacement is a single atomic rename. There is no lock to take and none to break. | section 6.5 |
+| | Compare, then replace: nothing is written if any ledger file changed since it was read, and the replacement is a single atomic exchange whose swapped-out content is checked, so a last-moment save is put back. There is no lock to take and none to break. | section 6.5 |
 | | Read back after writing; a row counts as applied only after the read-back and every assertion have passed. On any failure the previous file is restored, so no batch is ever partly booked. | section 6.5 |
 | | Post-apply assertions through the reader: no new load error, no byte outside the appended entries changed, each account moved by exactly the postings written to it, the statement closing balance agrees. | section 6.5 |
 | | The chart of accounts and the balance assertions stay the user's; Autobook never writes `open` or `balance`. A row whose account is not open on its date, or does not allow its currency, is queued. | proposal 0005 §1, §8.1 |

@@ -212,7 +212,9 @@ own writer lock from the first read until staging is updated, because two runs
 could otherwise both pass the compare and the second overwrite the first. The
 other guards are
 compare-before-write on every ledger file (each file's SHA-256 is taken at read
-and checked again before the replace), a single atomic rename so that no reader
+and checked again before the replace), a single atomic exchange with the
+temporary file whose swapped-out content is checked, so that a last-moment
+save is put back rather than overwritten and no reader
 sees a half-written file, and the read-back with the previous content kept.
 What that does not cover is in chapter 14.
 

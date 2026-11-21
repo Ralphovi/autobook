@@ -789,7 +789,9 @@ not silently created again.
 **No ledger lock; one writer lock.** Two Autobook runs are a different matter: both could pass the compare before either renames, and the second would overwrite the first. So `apply` and `undo` take Autobook's own **writer lock** (an advisory lock on a file beside the staging store, never in the ledger's directory) before the first read and hold it until staging is updated. A run that cannot take it writes nothing and exits with code 4. The lock binds Autobook only; editors and Fava do not know it.
 
 Against editors and Fava: Beancount has no lock. The guards are the compare before the
-replace on every ledger file, the single atomic rename, so that no reader sees a
+replace on every ledger file, the single atomic exchange (`renameat2` with
+`RENAME_EXCHANGE`) whose swapped-out content is checked, so that a save that got
+in after the last hash is put back instead of overwritten and no reader sees a
 half-written file, and the read-back with the previous content kept. An editor
 holding unsaved changes to the owned file is not covered (proposal 0005,
 *Risks*).

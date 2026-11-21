@@ -573,7 +573,10 @@ updated after step 7 or 8.
 5. **Compare, then replace.** Re-hash every file. If any differs from step 1,
    stop: exit 4, nothing written. Otherwise write the batch journal and make
    it durable (§10.4), then write a temporary file in the same directory,
-   `fsync` it, rename it over the owned file, and `fsync` the directory. The journal keeps the previous content
+   `fsync` it, **exchange** it with the owned file in one atomic step (§10.6),
+   check that what was swapped out is exactly the content the batch was
+   rendered from (otherwise exchange back and exit 4), and `fsync` the
+   directory. The journal keeps the previous content
    until step 7 has passed and staging is updated.
 6. **Read back.** Load the ledger again.
    - Every **created** row's proposal ID appears exactly once, with the
@@ -676,6 +679,23 @@ beside the staging store, never in the ledger's directory) before the first
 read and hold it until staging is updated. A run that cannot take it writes
 nothing and exits with code 4. The lock binds Autobook only; editors and
 Fava do not know it.
+
+**The swap.** A re-hash followed by a plain rename leaves a window: a save by
+an editor or Fava between the last hash and the rename would be overwritten by
+content rendered from the older snapshot, and the read-back could not tell.
+So the owned file is not renamed over; it is **exchanged** with the temporary
+file in one atomic step (`renameat2` with `RENAME_EXCHANGE`, Linux). After the
+exchange the temporary path holds exactly what was at the owned path an
+instant before. Autobook hashes it. If it is not the content the batch was
+rendered from, a save got in: Autobook exchanges back, so the saved edit is at
+the owned path again, writes nothing and exits with code 4. Nothing is lost in
+either order. The swapped-out file is kept with the journal until staging is
+updated, so a write that lands on it afterwards (an editor still holding the
+old file open) is also detected and restored.
+
+The writer requires a file system that supports the exchange. Where it is not
+available, `apply` refuses with exit code 4 instead of falling back to a plain
+rename.
 
 ### 11. Staging
 
@@ -914,7 +934,9 @@ full. The classification, privacy and review-file rules there are unchanged.
 - **Every posting has an explicit amount, and postings sum to exactly zero.**
   Autobook's own check; Beancount's is tolerant.
 - **Compare before replacing.** Nothing is written if any ledger file changed
-  since it was read. The replace is one atomic rename.
+  since it was read. The replace is one atomic **exchange**, and what it
+  swapped out is checked: a save that got in between the last hash and the
+  exchange is put back, never overwritten.
 - **Read back, then report.** A row is `applied` only after the read-back and
   every assertion have passed.
 - **A failed read-back or assertion restores the previous file.** No partial
@@ -1021,6 +1043,8 @@ like any other group and mostly become creditor-ID rules.
    - a matched hand-written entry is edited: a later line with the same amount
      and currency in the window is queued, not matched to it;
    - a change to any ledger file between read and replace stops the write;
+   - a save to the owned file between the last re-hash and the exchange is
+     put back at the owned path, and nothing is written;
    - a batch holding one created row and one matched row applies: the matched
      row's ID is not required in the ledger and its amount is not counted as
      balance movement;
