@@ -684,7 +684,9 @@ with the version tuple and each row's revision; a re-proposal of a row
 increments its `revision`. `decide` and `apply` refuse (exit 3, nothing
 recorded) a file whose header is missing or names no recorded review, whose
 review's tuple is no longer the validated one, or that lists a row whose
-revision has changed since the review was written. An older review of a
+revision has changed since the review was written, **or a row that is not in
+that review at all** (a line pasted from a newer review has no saved
+revision to check). Rows may be deleted or reordered; none may be added. An older review of a
 re-proposed row can therefore never pass as an account edit.
 **The batch is exactly the rows marked `a` in this file**, plus orphaned rows
 rebound in it with `m` (§8.2): an `m` on a candidate is that row's approval
@@ -836,7 +838,11 @@ check, changes nothing, staging included.
      ID, although its row is not yet `applied`: a new debit of the same
      amount is the created row's, not a second candidate for the matched row.
 7. **Assert.**
-   - The load reports no error that step 1 did not report.
+   - The load reports no error that step 1 did not report. Errors are
+     compared with their file names **mapped from the snapshot copy back to
+     the live paths**, here, in the baseline and in recovery, since each load
+     parses a different temporary copy; otherwise an old error in an unchanged
+     include would look new.
    - The owned file's **metadata** (mode, owner, group, ACL and extended
      attributes) is still what the scratch file was given. A change after the
      exchange is the user's, like a save: it is a conflict (exit 4), the file
@@ -1064,10 +1070,13 @@ checked against. `apply` and `undo` recover as follows:
   journal's. If they pass, the owned file's directory is `fsync`ed first —
   the exchange may not yet be durable if the crash came right after it — and
   only then are the rows marked applied (or, for an undo, returned to
-  `pending`). If they fail — also
+  `pending`). If the owned file's metadata changed since the exchange (a
+  permission edit), that is a conflict as in step 7: the file is left as it
+  is, the journal kept, exit 4. Otherwise, if they fail — also
   because another ledger file changed in the meantime, so that the batch can
   no longer be validated — the previous content is restored (exit 6) and the
-  batch can be applied again.
+  batch can be applied again; the restore is the checked exchange back, which
+  only runs while the owned file still has the rendered bytes and metadata.
 - It has neither: someone changed the file since. Autobook touches nothing,
   marks nothing applied and exits with code 4; `autobook status` shows the
   interrupted batch for the user to resolve.
