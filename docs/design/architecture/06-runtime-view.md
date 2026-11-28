@@ -252,8 +252,9 @@ whole or not at all.
    - The balance of every account the batch wrote postings to moved by exactly
      the sum of those postings, and no other account's balance moved. A matched
      row writes no posting and moves nothing.
-   - Where the statement states a closing balance: the ledger's balance on the
-     closing date equals it, minus the statement's lines not yet applied
+   - Where the statement states a closing balance: the ledger's balance in the
+     staged balance currency at the end of the staged closing-balance date (the
+     OFX `LEDGERBAL` as-of date, not necessarily the period end) equals it, minus the statement's lines not yet applied
      (queued, out of scope, pending transfer).
 8. **On any failure in 6 or 7,** restore the previous content — only if the
    owned file still holds exactly what step 5 wrote — exit with code 6, and
@@ -386,9 +387,20 @@ edited after the batch is still removed; its differences are listed before the
 confirmation.
 
 For a `match_existing` row undo changes staging only: nothing was ever written
-to the matched entry. Undo goes through the same compare-then-replace, read-back
-and restore-on-failure as 6.5, removes any paperless stamps the batch wrote, and
-returns the rows to `pending`. It never touches any other entry or any other
+to the matched entry. Undo goes through the same journal, compare-then-replace
+and restore-on-failure as 6.5, with its own read-back: the removed proposal IDs
+are absent, no new load error, the owned file is the previous content minus
+exactly the removed spans, no other file changed, and balances moved by exactly
+minus the removed postings. The journal records the operation, so recovery of
+an interrupted undo runs these checks, never apply's, and never marks a row
+applied. On success it removes any paperless stamps the batch wrote and
+returns the rows to `pending`.
+
+Undo refuses (exit code 4) while a row outside the batch that is `pending`,
+`approved` or `applied` has a `matched_entry` equal to the proposal ID of an
+entry it would remove — the second side of a transfer matched to the entry this
+batch created — and names those rows; they are undone or rejected first
+(proposal 0005 §10.5). It never touches any other entry or any other
 file.
 
 ## 6.8 Refusal

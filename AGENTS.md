@@ -323,7 +323,13 @@ one does not produce an error — it produces a wrong ledger.
   proposal ID of a staged row with disposition `create` or `create_split` in
   that batch **and** the entry is in the owned file — assert both before
   removing. It goes through the same compare, replace and read-back as apply.
-  Undo of a matched row changes staging only.
+  Undo of a matched row changes staging only. Undo has its own read-back (the
+  removed IDs are absent, the owned file is the previous content minus exactly
+  the removed spans, balances moved by minus the removed postings); the journal
+  records the operation so recovery never validates an undo with apply's checks.
+  Undo refuses while a row outside the batch still has a `matched_entry` equal
+  to a proposal ID it would remove (a transfer's second side); that row is
+  undone or rejected first.
 - **A refusal writes nothing.** The batch gate, the version gate and an
   unwritable ledger leave every ledger file byte-identical. Proposals stay
   pending. Exit with the documented code and the reason; the driver notifies.

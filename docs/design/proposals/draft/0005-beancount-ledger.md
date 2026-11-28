@@ -658,8 +658,9 @@ check, changes nothing, staging included.
    - The balance of every account the batch wrote postings to moved by exactly
      the sum of those postings, and no other account's balance moved. A
      matched row writes no posting and moves nothing.
-   - Where the statement states a closing balance: the ledger's balance on the
-     closing date equals it, minus the statement's lines not yet applied
+   - Where the statement states a closing balance: the ledger's balance in
+     `balance_currency` at the end of `closing_balance_date` (as staged; the
+     OFX file is not needed at apply) equals it, minus the statement's lines not yet applied
      (queued, out of scope, pending transfer). A matched line counts as
      applied: its posting is already in the ledger.
 8. **On any failure in 6 or 7,** restore the previous content — only if the
@@ -688,8 +689,8 @@ rows by ID and drops them, so nothing is created twice.
 
 **The batch journal.** Finding a batch's IDs in the ledger proves the entries are present, not that
 the batch passed its checks. So the writer keeps a **batch journal** beside the
-staging store. It holds everything steps 6 and 7 compare against: the batch and
-its proposal IDs, the SHA-256 of every loaded file from step 1, the SHA-256 of
+staging store. It holds everything steps 6 and 7 compare against: the
+operation (`apply` or `undo`, §10.5), the batch and its proposal IDs, the SHA-256 of every loaded file from step 1, the SHA-256 of
 the owned file after the replace, the owned file's previous content, the path
 of the temporary file (which holds the swapped-out content after the exchange),
 the errors the first load reported, and the first load's balance of every
@@ -737,7 +738,8 @@ itself: it refuses with exit code 4 until `apply` or `undo` has. `apply` and
   not the owned file's previous content, a save got in just before the
   exchange: Autobook exchanges back, so the saved edit is at the owned path
   again, marks nothing applied and exits with code 4. Only if it is the
-  previous content do steps 6 and 7 run, against the journal's baseline and not against the ledger as
+  previous content do steps 6 and 7 run — for an undo, its own checks
+  (§10.5) —, against the journal's baseline and not against the ledger as
   it stands: the other files' hashes, the errors and the balances are the
   journal's. If they pass, the rows are marked applied. If they fail — also
   because another ledger file changed in the meantime, so that the batch can
@@ -761,9 +763,36 @@ is not silently created again.
 Undo removes an entry only if its `autobook-id` is the proposal ID of a staged
 row with disposition `create` or `create_split` in that batch **and** the
 entry is in the owned file; both are asserted first. It removes exactly that
-entry's lines, under the writer lock, through the same journal, compare-and-replace and read-back as apply: an interrupted undo is validated or restored like an interrupted apply. An
+entry's lines, under the writer lock, through the same journal, compare-and-replace and restore-on-failure as apply. An
 entry the user edited is still removed, with its differences listed before
-confirmation. Undo of a matched row changes staging only.
+confirmation. Undo of a matched row changes staging only. On success the
+batch's rows return to `pending` and their `applied_entry` is cleared.
+
+**Undo has its own read-back.** The journal records the operation (`apply` or
+`undo`), and for an undo the entries it removes. After the exchange, and in
+recovery when the owned file has the journal's *after* hash, an undo is
+validated by its own checks, never apply's:
+
+- none of the removed proposal IDs appears in the ledger any more;
+- the load reports no error the first load did not report;
+- the owned file is the previous content with exactly the removed spans taken
+  out, and no other file changed;
+- the balance of every account the removed entries posted to moved by exactly
+  minus those postings, and no other account's balance moved;
+- every kept pre-image still has its recorded hash.
+
+If they pass, the rows return to `pending`; otherwise the previous content is
+restored (exit 6) and the rows stay `applied`. Recovery of an undo never marks
+a row applied.
+
+**A dependent match blocks undo.** The second side of a transfer may match the
+entry a first side created in an earlier batch (§8.2). Removing that entry
+would leave the matching row recorded as `applied` with no entry behind it. So
+undo refuses (exit 4) while any row outside the batch that is `pending`,
+`approved` or `applied` has a `matched_entry` equal to the proposal ID of an
+entry the undo would remove, and names those rows. The user undoes or rejects
+them first; undoing a matched row changes staging only, so this order always
+works.
 
 #### 10.6 No ledger lock; one writer lock
 
@@ -846,6 +875,9 @@ statements(
   source_account, producer,                    -- producer string from the driver, or NULL
   period_start, period_end,
   opening_balance, closing_balance,            -- integer cents, NULL if absent
+  balance_currency,                            -- the stated balances' currency
+  closing_balance_date,                        -- the closing balance's as-of date (OFX
+                                               -- LEDGERBAL DTASOF), which may differ from period_end
   status, reason, admitted_ts                  -- admitted|rejected
 )
 
@@ -1272,6 +1304,11 @@ like any other group and mostly become creditor-ID rules.
    - postings off by one cent, and off by half a cent, are both refused;
    - undo removes exactly the batch's created entries, including when
      unrelated entries were added to the owned file afterwards;
+   - a crash after an undo's exchange: the next run validates it with the
+     undo checks and returns the rows to `pending`, without restoring the
+     removed entries;
+   - undo of a batch whose created transfer entry another batch matched is
+     refused until that matched row is undone;
    - a ledger with existing errors can be booked into, and a new error rolls
      the batch back;
    - a mismatch in the root-name options refuses the run;
