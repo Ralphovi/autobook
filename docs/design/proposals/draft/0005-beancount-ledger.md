@@ -759,13 +759,14 @@ check, changes nothing, staging included.
    **The same comparison runs against every staged row not in the batch**
    that is not yet applied (pending, approved or queued), in any of the
    user's accounts, so it does not depend on both sides being approved
-   together. **Either direction establishes the pair**: the created row's
-   posting matching the staged row's statement amount, or the staged row's
-   proposed or approved postings (a pending split's +100 to B) matching the
-   created row's statement amount. If a created row has such a staged
-   counterpart and the row is not the side that represents both movements
-   (B's plain +100 while A's −105 fee split is still pending), the row is
-   queued as "pending transfer" until the counterpart is decided.
+   together. Pairing is the same **amount-independent** rule as within the
+   batch (reciprocal accounts, opposite signs, same currency, within the
+   window), using the staged row's proposed or approved postings. If a
+   created row has such a staged counterpart and the row is not the side that
+   represents both movements (B's plain +100 while A's −105 fee split is
+   still pending), the row is queued as "pending transfer" until the
+   counterpart is decided; if neither side represents both (−105 and +98),
+   the row is queued as "transfer amounts disagree".
    A row that fails is queued.
    **A batch with no created rows** (only matched rows) writes nothing: steps
    4 and 5 are skipped, no journal or pre-image is made, and the ledger is
@@ -780,8 +781,12 @@ check, changes nothing, staging included.
    stop: exit 4, nothing written. Otherwise write the batch journal and make
    it durable (§10.4), then write a temporary file in the same directory,
    `fsync` it, **re-hash every file and kept pre-image once more** — a save
-   during that preparation would otherwise be published — and, if nothing
-   changed, **exchange** it with the owned file in one atomic step (§10.6),
+   during that preparation would otherwise be published. If something
+   changed, nothing is exchanged: the file at the pre-image path is checked
+   to hold exactly the rendered content and recorded in staging (`kind =
+   rejected`), the journal is removed and its directory `fsync`ed, and the
+   run exits with code 4 — a later run is not blocked by a journal for a
+   write that never happened. If nothing changed, **exchange** it with the owned file in one atomic step (§10.6),
    check that what was swapped out is exactly the content the batch was
    rendered from (otherwise exchange back and exit 4), and `fsync` the
    directory. The journal keeps the previous content
@@ -851,8 +856,12 @@ check, changes nothing, staging included.
      on A's date, while this account's bank may credit it later (B's July 1).
      A posting in this account dated on or before the closing date, created
      from another account's line and not yet matched by any staged line of
-     this account, is not in the bank's balance: its amount is added to the
-     expected balance. If this account's own staged line for it is dated on
+     this account, is added to the expected balance **only when an admitted
+     statement of this account covers its date** (its period contains the
+     date) and has no line for it within the window: then the bank provably
+     had not booked it by then. Where no admitted statement covers the date
+     (this account's first statement starts later, so its opening balance may
+     already include the credit), the assertion is deferred and reported. If this account's own staged line for it is dated on
      or before the closing date, it would have matched; if it exists but is
      still unapplied, the candidate rule above defers. Both arrival orders of
      the two statements give the same result.
