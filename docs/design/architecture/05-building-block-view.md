@@ -358,9 +358,9 @@ Transfers also span batches. Every transfer row first goes through a
 `match_existing` search in its **source** account, before classification: the
 second side of a transfer booked in an earlier batch resolves to the entry the
 first side created, which has a posting in both accounts. A transfer booked
-from one side records a `transfers_pending` entry (counterpart account, amount,
+from one side records a `transfers_pending` entry (counterpart account, amount, currency,
 date window, the first side's proposal ID). An unmatched second side whose
-counterpart is pending is queued as "pending transfer", never classified.
+counterpart is pending, with the same amount and currency, is queued as "pending transfer", never classified.
 
 PayPal follows the configuration key `paypal_mode`:
 
@@ -697,6 +697,7 @@ proposals(source_account, line_key,       -- PK (source_account, line_key)
           proposed_splits,                -- create_split only: every posting, account and cents
           approved_splits,                -- create_split only: the postings as saved; what apply books
           matched_entry,                  -- match_existing: the candidate found at proposal
+          released_entry,                 -- the matched_entry an undo released; audit only
           match_source,                   -- search | rebound (the user chose it for an orphaned row)
           status,                         -- pending|approved|skipped|rejected|applied
                                           -- skipped releases the row's claim; it returns as `?` next time
@@ -706,8 +707,11 @@ proposals(source_account, line_key,       -- PK (source_account, line_key)
           doc_id, doc_match, doc_candidates,  -- proposal 0002: linked bill, linked|weak|ambiguous|none, count
           classifier_version, normaliser_version, ts)
 
-transfers_pending(counterpart_account, amount, window_start, window_end,
+transfers_pending(counterpart_account, amount, currency, window_start, window_end,
                   proposal_id)            -- first side of a cross-batch transfer
+
+batches(batch, operation,                -- PK (batch, operation); apply | undo
+        committed_ts)                     -- set with the row updates; recovery then only cleans up
 
 preimages(path PK,                        -- .autobook-preimage-<batch>-<ULID>: the exchange's temporary file, never renamed
           batch, operation,               -- apply | undo

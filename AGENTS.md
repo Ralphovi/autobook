@@ -239,9 +239,13 @@ one does not produce an error — it produces a wrong ledger.
   `applied` (a row never excludes its own candidate; a rejected or skipped row
   releases its claim), not only by a validated `applied_entry`,
   so two pending rows can never select the same entry.
-- **A live journal blocks `propose`.** `propose` refuses while a batch journal
-  exists, so it never matches or classifies against a batch that was written
+- **A live journal blocks `propose` and `decide`.** `propose`, and a `decide`
+  that would record a decision, refuse while a batch journal exists, so
+  nothing is matched, classified or decided against a batch that was written
   but not validated; `apply` or `undo` recover it first.
+- **A committed batch is never rolled back.** The staging transaction that
+  marks the rows records the batch as committed; a journal left after that
+  commit is only cleaned up, never validated or restored again.
 - **A changed pre-image blocks writing.** `propose`, `apply` and `undo` re-hash every
   kept pre-image first, again in the compare before the exchange and again as
   the last assertion before rows are marked applied (matched-only batches
@@ -275,7 +279,7 @@ one does not produce an error — it produces a wrong ledger.
   source-account `match_existing` search *before* classification. The second
   side of a transfer whose first side was booked in an earlier batch resolves
   to the entry the first side created. An unmatched second side whose
-  counterpart is in `transfers_pending` is queued as "pending transfer", never
+  counterpart is in `transfers_pending`, with the same amount and currency, is queued as "pending transfer", never
   classified.
 - **An interrupted batch is validated before it counts.** Before the replace,
   write the batch journal beside the staging store. It holds the complete
@@ -303,7 +307,8 @@ one does not produce an error — it produces a wrong ledger.
 - **The exchange keeps the ledger private.** The exchange puts the scratch
   file's inode at the owned path, so create it with `O_CREAT | O_EXCL |
   O_NOFOLLOW`, mode `0600`, then `fchmod` it to the owned file's mode, and
-  check mode and owner with `fstat` before the exchange; the umask must never
+  `fchown` it to the owned file's group (refuse if the user is not a member),
+  and check mode, owner and group with `fstat` before the exchange; the umask must never
   decide who reads the ledger. Refuse (exit 4) an owned file not owned by the
   running user or carrying an ACL or extended attributes. The journal (it holds
   the previous content) and staging are `0600` in a `0700` directory.
@@ -329,7 +334,8 @@ one does not produce an error — it produces a wrong ledger.
   records the operation so recovery never validates an undo with apply's checks.
   Undo refuses while a row outside the batch still has a `matched_entry` equal
   to a proposal ID it would remove (a transfer's second side); that row is
-  undone or rejected first.
+  undone or rejected first. Undoing a matched row releases its claim
+  (`matched_entry` moves to the audit-only `released_entry`).
 - **A refusal writes nothing.** The batch gate, the version gate and an
   unwritable ledger leave every ledger file byte-identical. Proposals stay
   pending. Exit with the documented code and the reason; the driver notifies.

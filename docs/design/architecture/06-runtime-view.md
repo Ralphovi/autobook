@@ -255,7 +255,8 @@ whole or not at all.
    - Where the statement states a closing balance: the ledger's balance in the
      staged balance currency at the end of the staged closing-balance date (the
      OFX `LEDGERBAL` as-of date, not necessarily the period end) equals it, minus the statement's lines not yet applied
-     (queued, out of scope, pending transfer).
+     (queued, out of scope, pending transfer). A matched line counts as applied
+     only if its matched posting is dated on or before that date.
 8. **On any failure in 6 or 7,** restore the previous content — only if the
    owned file still holds exactly what step 5 wrote — exit with code 6, and
    mark nothing applied.
@@ -292,7 +293,11 @@ its proposal IDs, the SHA-256 of every loaded file from step 1, the SHA-256 of
 the owned file after the replace, the owned file's previous content, the path
 of the temporary file (which holds the swapped-out content after the exchange),
 the errors the first load reported, and the first load's balance of every
-account. It is removed only after staging is updated.
+account. It is removed only after staging is updated. The staging
+transaction that marks the rows also records the batch as committed
+(`batches`); a journal found for a committed batch is only cleaned up, never
+validated or rolled back again. `propose`, and a `decide` that would record a
+decision, refuse while a journal exists.
 
 **Durability.** A journal that can be lost while the exchange survives is no
 journal. The order is: write the journal and `fsync` it and its directory;

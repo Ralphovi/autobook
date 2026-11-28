@@ -393,7 +393,9 @@ accounts appears in two statements. Booking both sides double-books.
 - Runs **before** classification. Every transfer line first goes through a
   `match_existing` search in its own source account.
 - The first side of a transfer is booked and records a `transfers_pending`
-  entry: counterpart account, amount, date window, its proposal ID.
+  entry: counterpart account, amount, currency, date window, its proposal ID.
+  A pending-transfer lookup requires the currency to be equal too; the same
+  number in another currency is not the counterpart.
 - The second side resolves to the entry the first side created — it has a
   posting in both accounts — and is never booked again. An unmatched second
   side whose counterpart is pending is queued as "pending transfer", never
@@ -602,7 +604,8 @@ checks the kept pre-images (§10.4, §10.6), and only then parses the review fil
 and records decisions. It holds the lock until staging is updated after step 7
 or 8. A run that cannot take the lock, or refuses in recovery or the pre-image
 check, changes nothing, staging included.
-`decide` takes the same lock.
+`decide` takes the same lock, and refuses while a batch journal exists
+(§10.4).
 
 1. **Read.** Load the ledger: errors, accounts, existing Autobook IDs, and the
    SHA-256 of every file. The owned file must be among them, with matching
@@ -662,7 +665,10 @@ check, changes nothing, staging included.
      `balance_currency` at the end of `closing_balance_date` (as staged; the
      OFX file is not needed at apply) equals it, minus the statement's lines not yet applied
      (queued, out of scope, pending transfer). A matched line counts as
-     applied: its posting is already in the ledger.
+     applied only when its matched posting is dated on or before
+     `closing_balance_date`; a line matched to a posting dated later (the
+     match window reaches five days past the line) is counted with the lines
+     not yet applied, since its posting is not in the balance on that date.
 8. **On any failure in 6 or 7,** restore the previous content — only if the
    file still holds exactly what step 5 wrote — exit 6, and mark nothing
    applied. A row is `applied` only after step 7 passes.
@@ -707,9 +713,12 @@ complete rendered content; exchange; `fsync` the owned file's directory again.
 so its metadata becomes the ledger's. The scratch file is created with
 `O_CREAT | O_EXCL | O_NOFOLLOW` and mode `0600`, then `fchmod`ed to the owned
 file's current mode, so the process umask never decides who can read the
-ledger. Before the exchange the writer checks, with `fstat` on both open
-files, that the scratch file has the owned file's mode and owner; the owned
-file must belong to the running user. An owned file with a POSIX ACL or other
+ledger. It is also given the owned file's group with `fchown` (the user must
+be a member of it; otherwise the writer refuses, exit 4), since a setgid
+directory or the user's primary group could otherwise hand a `0640` ledger to
+the wrong group. Before the exchange the writer checks, with `fstat` on both
+open files, that the scratch file has the owned file's mode, owner and group;
+the owned file must belong to the running user. An owned file with a POSIX ACL or other
 extended attributes is refused (exit 4) rather than silently stripped of them.
 The journal, which holds the previous content, and the staging store are
 created `0600` in a directory of mode `0700`. A pre-image keeps the mode of
@@ -722,8 +731,21 @@ directory, after staging has committed.
 Every `propose`, `apply` and `undo` first looks for a journal, under the
 writer lock — `propose` too, so that it never classifies against a batch that
 was written but not yet validated. `propose` does not recover a journal
-itself: it refuses with exit code 4 until `apply` or `undo` has. `apply` and
-`undo` recover as follows:
+itself: it refuses with exit code 4 until `apply` or `undo` has. So does a
+`decide` that would record a decision, before it parses the review file: the
+journal's batch is re-checked against `approved_splits` and `matched_entry` in
+staging, and a decision recorded in between would change what that batch is
+checked against. `apply` and `undo` recover as follows:
+
+- **Staging already records the batch as committed.** The staging transaction
+  that marks the rows `applied` (or, for an undo, `pending`) also records the
+  journal's batch and operation as committed (`batches.committed_ts`). A crash
+  after that commit and before the journal is removed leaves a journal for a
+  finished operation. Recovery checks staging first: if the batch is
+  committed, it only finishes the cleanup — records the pre-image if that was
+  not yet done, removes the journal and `fsync`s its directory — and never
+  validates or rolls back again. The cases below apply only to a batch staging
+  does not record as committed.
 
 - The owned file has the journal's *before* hash: either the exchange never
   happened, or the batch was exchanged back after a failed check. Before the
@@ -766,7 +788,11 @@ entry is in the owned file; both are asserted first. It removes exactly that
 entry's lines, under the writer lock, through the same journal, compare-and-replace and restore-on-failure as apply. An
 entry the user edited is still removed, with its differences listed before
 confirmation. Undo of a matched row changes staging only. On success the
-batch's rows return to `pending` and their `applied_entry` is cleared.
+batch's rows return to `pending` and their `applied_entry` is cleared. A
+matched row also releases its claim: its `matched_entry` moves to
+`released_entry`, kept for the audit, and is cleared, so the row is searched
+again on the next `propose` and no longer blocks undo of the batch that
+created the entry.
 
 **Undo has its own read-back.** The journal records the operation (`apply` or
 `undo`), and for an undo the entries it removes. After the exchange, and in
@@ -896,6 +922,7 @@ proposals(
   matched_entry,                               -- match_existing: the candidate found at proposal, its
                                                -- autobook-id if it has one, else its content hash
   match_source,                                -- search | rebound (the user chose it, §8.2)
+  released_entry,                              -- the matched_entry an undo released; audit only, claims nothing
   status,                                      -- pending|approved|skipped|rejected|applied
                                                -- skipped: `s` in the review file; releases the
                                                -- row's claim, and the row returns as `?` next time
@@ -906,9 +933,15 @@ proposals(
 )
 
 transfers_pending(
-  counterpart_account, amount,
+  counterpart_account, amount, currency,
   window_start, window_end,
   proposal_id
+)
+
+batches(
+  batch, operation,                            -- PK; apply | undo
+  committed_ts                                 -- set in the same transaction that marks the rows;
+                                               -- a journal for a committed batch is only cleaned up
 )
 
 preimages(
