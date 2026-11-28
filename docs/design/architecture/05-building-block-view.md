@@ -915,9 +915,9 @@ Exit codes (proposal 0005 §4.3):
 | 1 | Nothing to do | nothing |
 | 2 | Usage or configuration error | nothing |
 | 3 | The batch gate or the version gate refused | nothing |
-| 4 | The ledger is not writable as expected: the owned file is not included, its root-name options differ from the main file's, a ledger file changed during the run, or another Autobook run holds the writer lock | nothing |
+| 4 | The ledger is not writable as expected: the owned file is not included, its root-name options differ from the main file's, a ledger file changed during the run, another Autobook run holds the writer lock — or a **conflict**: the owned file was saved, or its permissions changed, during the write | nothing, in a refusal. In a conflict, Autobook's batch is not in effect, the user's saved version is at the owned path, every displaced version is kept as a file beside the journal, and `autobook status` names them; the driver reports a conflict for the user to resolve, not a clean refusal |
 | 5 | The review file did not parse; the line number is on standard error | nothing |
-| 6 | The read-back or an assertion failed; the previous file was restored | no ledger file changes (every included file byte-identical); the rejected batch is kept as a pre-image beside the owned file and recorded in staging |
+| 6 | The read-back or an assertion failed; no row of the batch was committed | nothing of Autobook's remains: the owned file holds its previous content again. A change to another included file that caused the failure is someone else's edit and is left as it is. If the batch was exchanged in, the previous file was restored and the rejected batch is kept as a pre-image beside the owned file and recorded in staging; a matched-only batch wrote nothing, so there is nothing to restore and no pre-image |
 | 7 | A statement was rejected at admission; the reason is reported per file | nothing staged from that statement |
 
 The numbering is fixed when the first command that returns 3–7 lands.

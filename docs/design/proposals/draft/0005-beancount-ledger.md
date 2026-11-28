@@ -225,9 +225,9 @@ starts an editor or another program.
 | 1 | Nothing to do | nothing |
 | 2 | Usage or configuration error | nothing |
 | 3 | The batch gate or the version gate refused (§9.2, §9.3) | nothing |
-| 4 | The ledger is not writable as expected: the owned file is not included, its root-name options differ from the main file's, a ledger file changed during the run, or another Autobook run holds the writer lock | nothing |
+| 4 | The ledger is not writable as expected: the owned file is not included, its root-name options differ from the main file's, a ledger file changed during the run, another Autobook run holds the writer lock — or a **conflict**: the owned file was saved, or its permissions changed, during the write | nothing, in a refusal. In a conflict, Autobook's batch is not in effect, the user's saved version is at the owned path, every displaced version is kept as a file beside the journal, and `autobook status` names them; the driver reports a conflict for the user to resolve, not a clean refusal |
 | 5 | The review file did not parse; the line number is on standard error | nothing |
-| 6 | The read-back or an assertion failed; no row of the batch was committed | no ledger file changes (every included file byte-identical). If the batch was exchanged in, the previous file was restored and the rejected batch is kept as a pre-image beside the owned file and recorded in staging; a matched-only batch wrote nothing, so there is nothing to restore and no pre-image |
+| 6 | The read-back or an assertion failed; no row of the batch was committed | nothing of Autobook's remains: the owned file holds its previous content again. A change to another included file that caused the failure is someone else's edit and is left as it is. If the batch was exchanged in, the previous file was restored and the rejected batch is kept as a pre-image beside the owned file and recorded in staging; a matched-only batch wrote nothing, so there is nothing to restore and no pre-image |
 | 7 | A statement was rejected at admission; the reason is reported per file | nothing staged from that statement |
 
 The numbering is fixed when the first command that returns 3–7 lands.
@@ -673,7 +673,9 @@ check, changes nothing, staging included.
    SHA-256 of every file. The hashes must describe the bytes Beancount
    parsed, so the load is taken from a **snapshot**: every ledger file is read
    once into memory, hashed, and written into a private directory (mode
-   `0700`) under the same relative paths, and Beancount loads that copy, never
+   `0700`) under the same paths relative to the **deepest common ancestor of
+   every resolved file** (so `../shared/accounts.bean` stays inside the
+   copy), and Beancount loads that copy, never
    the live files. The live files and the include set are then compared with
    the snapshot; if any differs, a save got in, and the snapshot is taken
    again (up to three times, then exit 4). A save that is undone during the
@@ -844,6 +846,15 @@ check, changes nothing, staging included.
      the staging commit, so a displaced save during the other checks is
      caught. This is the last check before the rows are marked applied; a mismatch is
      a save that got into an old file and rolls the batch back.
+   - In the same final step, the **live ledger files and the include set** are
+     re-hashed against the read-back snapshot: a save while the assertions
+     ran is handled as in the hash check above (the owned file changed: a
+     conflict, exit 4; only another file changed: rolled back, exit 6). A save
+     that lands after this final check and before the staging commit is an
+     ordinary later edit, no different from one made a minute after `apply`
+     returns; `autobook status` reports any applied entry that no longer
+     matches staging. No re-check can close that last instant without a
+     ledger lock, which Beancount does not have.
 8. **On any failure in 6 or 7,** restore the previous content — only if the
    file still holds exactly what step 5 wrote — exit 6, and mark nothing
    applied. A row is `applied` only after step 7 passes.

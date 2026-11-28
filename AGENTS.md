@@ -209,7 +209,9 @@ one does not produce an error — it produces a wrong ledger.
   so an edit inside the appended entries is caught; such a save is kept as a
   conflict (exit 4), never exchanged away. If only another file changed and
   the owned file still holds the rendered content, the batch is rolled back
-  (exit 6). The balance of every account the batch wrote postings to
+  (exit 6). The live files and the include set are re-hashed once more with
+  the final pre-image check, immediately before the staging commit; a save
+  after that is an ordinary later edit, reported by `autobook status`. The balance of every account the batch wrote postings to
   moved by exactly the sum of those postings, and no other balance moved; a
   matched row writes none and moves nothing. Where the statement states a closing balance, the ledger's balance
   on that date equals it minus the account's staged lines up to that date not
