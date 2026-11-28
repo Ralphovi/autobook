@@ -702,6 +702,9 @@ check, changes nothing, staging included.
    the ledger** (the user deleted it) is excluded and reported, never booked
    again: its staged status is read before the file's decisions are
    recorded, and a saved review file does not turn it back into a create.
+   The one exception is a **matched** row rebound with `m` in this file
+   (§8.2): its old entry is missing because the user edited it, and the
+   rebind names the new one, so it goes on to step 3 and is validated there.
 3. **Check each row.** Both accounts open on its date; its currency declared
    on the source account and allowed on the other; postings in whole cents
    summing to exactly zero. **No posting of a created row is to the source
@@ -843,6 +846,16 @@ check, changes nothing, staging included.
      balance, so the posting's amount is added to the expected balance. A
      line dated after the closing date that is not yet applied but has a
      candidate dated on or before it defers the assertion, as above.
+     **Counterpart postings.** A transfer Autobook created from another
+     account's line (A's June 30 debit) puts a posting in this account dated
+     on A's date, while this account's bank may credit it later (B's July 1).
+     A posting in this account dated on or before the closing date, created
+     from another account's line and not yet matched by any staged line of
+     this account, is not in the bank's balance: its amount is added to the
+     expected balance. If this account's own staged line for it is dated on
+     or before the closing date, it would have matched; if it exists but is
+     still unapplied, the candidate rule above defers. Both arrival orders of
+     the two statements give the same result.
      **An intraday cutoff.** Where `closing_balance_time` is set and is not
      the end of the day, the bank's balance may exclude some of that day's
      movements, and a date-only ledger cannot say which. If the account has

@@ -321,8 +321,9 @@ one does not produce an error — it produces a wrong ledger.
   would find (the fee-bearing split, not the plain 100); configuration order
   decides only when both qualify, and neither qualifying queues both. Pairing
   does not need the amounts to agree: two rows of the user's accounts posting
-  to each other's source account, same currency, within the window, are a
-  pair; if no side represents both movements, both are queued. The
+  to each other's source account, same currency, within the window, with
+  opposite-signed statement amounts (two independent payments A→B and B→A are
+  both debits and are not a pair), are a pair; if no side represents both movements, both are queued. The
   comparison also runs against staged rows outside the batch, so a plain side
   waits ("pending transfer") while the fee-bearing side is still undecided. Apply also searches again, in both accounts against the live ledger,
   for every created row whose destination, or any split posting, is one of
