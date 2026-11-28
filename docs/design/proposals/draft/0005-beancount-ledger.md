@@ -555,10 +555,12 @@ an orphaned row, and the strict parser aborts on anything else (exit 5):
   is set again only after the read-back, so step 2 never drops the row on the
   strength of the old entry. The candidate line stays in the review file
   regenerated from it. An `m` under a row that is not orphaned aborts the parse
-  — except under a row already rebound (`match_source = rebound`, not yet
-  applied) where the marked candidate's hash prefix is the recorded entry:
-  that is the same rebind seen again, for example when `apply --from` runs on
-  the file `decide` already recorded, and it counts as that row's approval.
+  — except under a row already rebound (`match_source = rebound`) where the
+  marked candidate's hash prefix is the recorded entry: that is the same
+  rebind seen again. If the row is not yet applied (`apply --from` on the file
+  `decide` already recorded), it counts as that row's approval; if it is
+  already applied (a retry after a run whose success the driver did not
+  see), it is a no-op and the rest of the file is processed.
   A different candidate under a rebound row aborts the parse.
 - **`x` on the row** releases the claim and rejects the row: the line is not
   booked by Autobook, and the user books it by hand if it is real.
@@ -829,8 +831,16 @@ check, changes nothing, staging included.
      search, run again on the reloaded ledger, must still find exactly one
      candidate, and it must be the row's `matched_entry` (for a rebound row:
      the recorded entry still passes the predicate, unclaimed by another row).
+     In this search, and in recovery's, **every entry the batch just
+     created counts as claimed for its own source account**, by its proposal
+     ID, although its row is not yet `applied`: a new debit of the same
+     amount is the created row's, not a second candidate for the matched row.
 7. **Assert.**
    - The load reports no error that step 1 did not report.
+   - The owned file's **metadata** (mode, owner, group, ACL and extended
+     attributes) is still what the scratch file was given. A change after the
+     exchange is the user's, like a save: it is a conflict (exit 4), the file
+     is left as it is, nothing is marked applied. Recovery checks the same.
    - The owned file's SHA-256 is exactly the rendered content's, and no other
      file changed. Checking only the bytes before the appended entries would
      miss an edit inside them (a changed narration keeps IDs, amounts and
@@ -863,7 +873,9 @@ check, changes nothing, staging included.
      closing date is in the ledger's balance either way. A line not yet applied
      can still be in the ledger already, for example a skipped line whose
      hand-written entry exists. So before subtracting, the writer runs each
-     such line's match predicate (claims ignored), counting only candidates
+     such line's match predicate (claims ignored) — only for lines in
+     `balance_currency`, since a posting in another currency cannot affect
+     this balance — counting only candidates
      dated on or before `closing_balance_date`, since a later posting cannot
      be in the balance on that date: a line with no such candidate is
      subtracted; a line with one makes the statement's
