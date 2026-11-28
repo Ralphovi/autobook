@@ -161,7 +161,8 @@ one does not produce an error — it produces a wrong ledger.
   restores the previous content of the owned file and marks nothing applied.
   There is no partial batch.
 - **Compare before replacing.** Nothing is written if any ledger file changed
-  since it was read. Hash every file before and after each load and repeat the
+  since it was read; the compare is repeated after the journal and temporary
+  file are durable, immediately before the exchange. Hash every file before and after each load and repeat the
   load if a hash moved, so the hashes describe the bytes Beancount parsed. The replace is one atomic **exchange** (`renameat2` with
   `RENAME_EXCHANGE`) with a file written and flushed in the same directory,
   never a plain rename. The swapped-out file is never deleted and never renamed:
@@ -298,7 +299,9 @@ one does not produce an error — it produces a wrong ledger.
   sides — compared posting by posting, so a split with a fee leg is caught.
   The side kept is the one whose entry the other side's exact-amount match
   would find (the fee-bearing split, not the plain 100); configuration order
-  decides only when both qualify, and neither qualifying queues both. Apply also searches again, in both accounts against the live ledger,
+  decides only when both qualify, and neither qualifying queues both. The
+  comparison also runs against staged rows outside the batch, so a plain side
+  waits ("pending transfer") while the fee-bearing side is still undecided. Apply also searches again, in both accounts against the live ledger,
   for every created row whose destination, or any split posting, is one of
   the user's own accounts (a split posting with its own amount), and queues it
   if a search finds a candidate. This screen ignores claims: an

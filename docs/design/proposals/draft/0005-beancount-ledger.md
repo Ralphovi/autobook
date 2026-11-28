@@ -724,6 +724,13 @@ check, changes nothing, staging included.
    +100 entry would put only −100 in A, which A's −105 line never matches.
    If both sides qualify, the configuration order decides (the canonical
    side); if neither does, both are queued.
+   **The same comparison runs against every staged row not in the batch**
+   that is not yet applied (pending, approved or queued), in any of the
+   user's accounts, so it does not depend on both sides being approved
+   together. If a created row's transfer posting has such a staged
+   counterpart and the row is not the side that represents both movements
+   (B's plain +100 while A's −105 fee split is still pending), the row is
+   queued as "pending transfer" until the counterpart is decided.
    A row that fails is queued.
    **A batch with no created rows** (only matched rows) writes nothing: steps
    4 and 5 are skipped, no journal or pre-image is made, and the ledger is
@@ -737,7 +744,9 @@ check, changes nothing, staging included.
    included. If any differs from step 1,
    stop: exit 4, nothing written. Otherwise write the batch journal and make
    it durable (§10.4), then write a temporary file in the same directory,
-   `fsync` it, **exchange** it with the owned file in one atomic step (§10.6),
+   `fsync` it, **re-hash every file and kept pre-image once more** — a save
+   during that preparation would otherwise be published — and, if nothing
+   changed, **exchange** it with the owned file in one atomic step (§10.6),
    check that what was swapped out is exactly the content the batch was
    rendered from (otherwise exchange back and exit 4), and `fsync` the
    directory. The journal keeps the previous content

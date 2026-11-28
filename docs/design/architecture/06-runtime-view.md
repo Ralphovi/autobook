@@ -241,7 +241,9 @@ whole or not at all.
      approved date, accounts and amounts.
    - A **matched** row wrote nothing, so its ID is not looked for. Its recorded
      entry must still be present, and the search, run again, must still find
-     exactly one candidate: that entry.
+     exactly one candidate: that entry. A row the user rebound (proposal 0005
+     §8.2) instead needs its recorded entry to pass the predicate, unclaimed by
+     another row; other candidates may remain, since the user chose among them.
 7. **Assert.**
    - The load reports no error that step 1 did not report.
    - The owned file's hash is exactly the rendered content's (an edit inside
