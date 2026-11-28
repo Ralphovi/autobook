@@ -704,9 +704,15 @@ check, changes nothing, staging included.
    **same signed amount** as that row's source posting (A's entry posts
    +100 to B; B's statement line is +100 in B), the other row posts back to
    this row's source account, same currency, within the window; a fee in a
-   split does not hide it — only the canonical side stays and the other is queued as "pending
+   split does not hide it — only one side stays and the other is queued as "pending
    transfer" — the balance-movement assertion would otherwise expect both
-   writes and not see the duplicate.
+   writes and not see the duplicate. The side that stays is the one whose
+   entry **represents both statement movements**: once written, the other
+   side's match predicate (exact amount and currency in its own account)
+   finds it. A split of A's −105 into +100 to B and a 5 fee does; B's plain
+   +100 entry would put only −100 in A, which A's −105 line never matches.
+   If both sides qualify, the configuration order decides (the canonical
+   side); if neither does, both are queued.
    A row that fails is queued.
    **A batch with no created rows** (only matched rows) writes nothing: steps
    4 and 5 are skipped, no journal or pre-image is made, and the ledger is
@@ -1141,8 +1147,10 @@ booked. A destination posting's **account** may be changed by typing over it; th
 source posting's account comes from the configuration and may not. No
 posting's **amount** may be changed — the amounts come from the rule, and a split with other
 amounts is rejected (`x`) and written by hand. The strict parser compares every
-posting line's ID, amount and currency with staging, and checks its account
-against the live chart of accounts: open on the row's date, currency allowed.
+posting line's ID, amount and currency with staging on every split, and, on a
+row marked `a`, checks each account against the live chart of accounts: open
+on the row's date, currency allowed. A split left at `?`, `s` or `x` whose
+destination was closed since does not block the file.
 A posting line with no parent row, or a parent row missing a posting, aborts
 the parse.
 
@@ -1157,7 +1165,9 @@ gates are pre-marked `a`; everything else is `?`.
   that, never `proposed_account`. Every row shows its currency: an account may hold
   several, and a bare number would hide which one is being approved.
 - **Parse by ID, never by position.** Reordering or deleting rows must not
-  misalign anything. An unknown ID is an error.
+  misalign anything. An unknown ID is an error, and so is an ID that occurs
+  twice — a copied row or posting line — since staging holds one decision per
+  row; the parse aborts (exit 5) before any decision is recorded.
 - **Strict parser.** An unknown status, an account that is not open in the
   ledger on a row marked `a` (a `?`, `s` or `x` row may keep `(none)`, §8.1), or a date, amount or currency that differs from staging aborts the whole file with a
   line number (exit 5) and applies nothing. The date is a statement fact, like

@@ -294,7 +294,10 @@ one does not produce an error — it produces a wrong ledger.
   the canonical side (first in the configuration) is classified; the other is
   queued as "pending transfer". `transfers_pending` is recorded at proposal,
   and apply queues the second of two created rows that are one transfer's two
-  sides — compared posting by posting, so a split with a fee leg is caught. Apply also searches again, in both accounts against the live ledger,
+  sides — compared posting by posting, so a split with a fee leg is caught.
+  The side kept is the one whose entry the other side's exact-amount match
+  would find (the fee-bearing split, not the plain 100); configuration order
+  decides only when both qualify, and neither qualifying queues both. Apply also searches again, in both accounts against the live ledger,
   for every created row whose destination, or any split posting, is one of
   the user's own accounts (a split posting with its own amount), and queues it
   if a search finds a candidate. The second
@@ -492,7 +495,8 @@ hands over OFX files.
   changed and are checked against the live chart of accounts; amounts and the
   source account may not.
 - **Parse by ID, never by position.** Reordering, deleting, or sorting the review
-  file must not misalign rows. An unknown ID is an error, not a guess.
+  file must not misalign rows. An unknown ID is an error, not a guess; so is
+  an ID that appears twice.
 - **Strict parser, fail loudly.** Unknown status char, unparseable account, or
   date, amount or currency mismatch aborts the whole batch with a line number and applies nothing.
   Validate accounts against the live CoA at parse time so a typo stops the run
