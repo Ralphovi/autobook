@@ -960,8 +960,10 @@ check, changes nothing, staging included.
      returns; `autobook status` reports any applied entry that no longer
      matches staging. No re-check can close that last instant without a
      ledger lock, which Beancount does not have.
-8. **On any failure in 6 or 7,** restore the previous content — only if the
-   file still holds exactly what step 5 wrote — exit 6, and mark nothing
+8. **On any failure in 6 or 7 other than a conflict** (the owned file's
+   bytes or metadata changed after the exchange: step 7 leaves it in place and
+   exits 4, and this step does not run), restore the previous content — only if the
+   file still holds exactly what step 5 wrote, with the metadata it was given — exit 6, and mark nothing
    applied. A row is `applied` only after step 7 passes.
    The restore is the checked exchange back, followed by an `fsync` of the
    owned file's directory before the pre-image is recorded or the journal
@@ -1117,8 +1119,11 @@ treats nothing as validated because its proposal ID is present. It branches
 on the journal's operation. **For an apply**, each of the
 batch's rows is checked against the current ledger as the read-back would
 (its ID exactly once, the approved date, accounts, amounts and currencies;
-for a matched row, the predicate). A row that passes is marked `applied`,
-because the user, attending, has now accepted the ledger as it stands; a row
+for a matched row, the predicate). Rows are marked `applied` only if, in
+addition, the batch assertions hold against the ledger as it stands: no load
+error that the journal's first load did not report, and every kept pre-image
+unchanged. If the assertions fail, every row of the batch becomes
+`unverified`, whatever its own check said. A row
 that does not becomes **`unverified`**: its entry is present but not
 validated, the difference is listed, and its revision is incremented so no old
 review can book it. Step 2 of apply never drops an `unverified` row on its
