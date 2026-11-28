@@ -728,8 +728,12 @@ check, changes nothing, staging included.
    created row's **net movement in each other account of the user's** — its
    destination or its split postings, summed per account and currency, so
    +60 and +40 to B count as +100 — is compared with the source posting of
-   every other created row in the batch. If they are the two sides of one
-   transfer — the posting is in the other row's source account with the
+   every other created row in the batch. **Pairing does not depend on the
+   amounts agreeing:** two rows in two of the user's accounts, same currency,
+   within the window, each with a posting to the other's source account, are
+   treated as the two sides of one transfer whatever their amounts (−105 in A
+   and +98 in B, each with its own bank's fee, are a pair). An exact pair is
+   one where — the posting is in the other row's source account with the
    **same signed amount** as that row's source posting (A's entry posts
    +100 to B; B's statement line is +100 in B), the other row posts back to
    this row's source account, same currency, within the window; a fee in a
@@ -741,7 +745,8 @@ check, changes nothing, staging included.
    finds it. A split of A's −105 into +100 to B and a 5 fee does; B's plain
    +100 entry would put only −100 in A, which A's −105 line never matches.
    If both sides qualify, the configuration order decides (the canonical
-   side); if neither does, both are queued.
+   side); if neither does — as for −105 and +98 — both are queued ("transfer
+   amounts disagree") and the user books the transfer by hand.
    **The same comparison runs against every staged row not in the batch**
    that is not yet applied (pending, approved or queued), in any of the
    user's accounts, so it does not depend on both sides being approved
@@ -1004,7 +1009,10 @@ entry is in the owned file; both are asserted first. It removes exactly that
 entry's lines, under the writer lock, through the same journal, compare-and-replace and restore-on-failure as apply. An
 entry the user edited is still removed, with its differences listed before
 confirmation. Undo of a matched row changes staging only. On success the
-batch's rows return to `pending` and their `applied_entry` is cleared. A
+batch's rows return to `pending` and their `applied_entry` is cleared, and
+each row's `revision` is incremented in the same transaction (also when
+recovery completes an undo), so the saved review file the batch was applied
+from no longer passes the review check and cannot book the rows again. A
 matched row also releases its claim: its `matched_entry` moves to
 `released_entry`, kept for the audit, and is cleared, so the row is searched
 again on the next `propose` and no longer blocks undo of the batch that
@@ -1050,7 +1058,7 @@ either exchanges, and the second would overwrite the first. So `propose`,
 `apply`, `undo` and `decide` take Autobook's own **writer lock** — `propose`
 because its match search and staging of claims must not interleave with
 another run's — (an advisory lock on a
-file beside the staging store, never in the ledger's directory) before they
+file in the store's state directory, §11, never in the ledger's directory) before they
 parse the review file, record any decision or read the ledger, and hold it until staging is updated. A run that cannot take it writes
 nothing and exits with code 4. The lock binds Autobook only; editors and
 Fava do not know it.
@@ -1134,9 +1142,12 @@ rename.
 ### 11. Staging
 
 SQLite under `$XDG_DATA_HOME` by default; a PostgreSQL URI as an option. The
-writer lock and the batch journal live in a local directory beside the
-configuration, not in the database, so they bind only the clients of one
-machine. A PostgreSQL store is therefore supported for **one machine only**:
+writer lock and the batch journal live in a local directory **keyed by the
+staging store's identity**, not by the configuration: a UUID that `init`
+writes into the store, giving `$XDG_STATE_HOME/autobook/<store-UUID>/`. Two
+configurations that point at the same store therefore take the same lock and
+see the same journal. They are files, not rows, so they bind only the clients
+of one machine. A PostgreSQL store is therefore supported for **one machine only**:
 Autobook records the host that created the store and refuses (exit 2) a run
 from another host. Sharing one ledger and one store between machines would
 need a lock and a journal every client sees; it is not designed here (see

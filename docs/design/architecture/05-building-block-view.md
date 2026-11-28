@@ -831,7 +831,7 @@ what staging recorded, and proposal IDs that staging holds as applied but the
 ledger no longer contains. Both are reports, never writes: a missing entry is
 not silently created again.
 
-**No ledger lock; one writer lock.** Two Autobook runs are a different matter: both could pass the compare before either exchanges, and the second would overwrite the first. So `propose`, `apply`, `undo` and `decide` take Autobook's own **writer lock** (an advisory lock on a file beside the staging store, never in the ledger's directory) before the first read and hold it until staging is updated. A run that cannot take it writes nothing and exits with code 4. The lock binds Autobook only; editors and Fava do not know it.
+**No ledger lock; one writer lock.** Two Autobook runs are a different matter: both could pass the compare before either exchanges, and the second would overwrite the first. So `propose`, `apply`, `undo` and `decide` take Autobook's own **writer lock** (an advisory lock on a file in the staging store's state directory (keyed by the store's UUID, proposal 0005 §11), never in the ledger's directory) before the first read and hold it until staging is updated. A run that cannot take it writes nothing and exits with code 4. The lock binds Autobook only; editors and Fava do not know it.
 
 Against editors and Fava: Beancount has no lock. The guards are the compare before the
 replace on every ledger file, the single atomic exchange (`renameat2` with

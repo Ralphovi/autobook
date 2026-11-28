@@ -189,8 +189,9 @@ one does not produce an error — it produces a wrong ledger.
   unavailable: refuse. Beancount has no lock; against editors and
   Fava this is the guard.
 - **One Autobook writer at a time.** `propose`, `apply`, `undo` and `decide` take
-  Autobook's own writer lock (an advisory lock on a file beside the staging
-  store, never in the ledger's directory) before they parse the review file or
+  Autobook's own writer lock (an advisory lock on a file in the directory
+  keyed by the staging store's UUID, so two configurations of one store share
+  it, never in the ledger's directory) before they parse the review file or
   record any decision, and before the first read of the ledger, and hold it until staging is
   updated. Without it, two runs can both pass the compare and the second
   overwrites the first. A run that cannot take the lock writes nothing.
@@ -318,7 +319,10 @@ one does not produce an error — it produces a wrong ledger.
   content.
   The side kept is the one whose entry the other side's exact-amount match
   would find (the fee-bearing split, not the plain 100); configuration order
-  decides only when both qualify, and neither qualifying queues both. The
+  decides only when both qualify, and neither qualifying queues both. Pairing
+  does not need the amounts to agree: two rows of the user's accounts posting
+  to each other's source account, same currency, within the window, are a
+  pair; if no side represents both movements, both are queued. The
   comparison also runs against staged rows outside the batch, so a plain side
   waits ("pending transfer") while the fee-bearing side is still undecided. Apply also searches again, in both accounts against the live ledger,
   for every created row whose destination, or any split posting, is one of
@@ -331,7 +335,7 @@ one does not produce an error — it produces a wrong ledger.
   counterpart is in `transfers_pending`, with the same amount and currency, is queued as "pending transfer", never
   classified.
 - **An interrupted batch is validated before it counts.** Before the replace,
-  write the batch journal beside the staging store. It holds the complete
+  write the batch journal in the store's state directory (keyed by its UUID). It holds the complete
   baseline the assertions need: proposal IDs, the hash of every loaded file,
   the owned file's hash after the replace and its previous content, the path
   holding the swapped-out content after the exchange, the first load's errors,
@@ -391,7 +395,8 @@ one does not produce an error — it produces a wrong ledger.
   proposal ID of a staged row with disposition `create` or `create_split` in
   that batch **and** the entry is in the owned file — assert both before
   removing. It goes through the same compare, replace and read-back as apply.
-  Undo of a matched row changes staging only. Undo has its own read-back (the
+  Undo of a matched row changes staging only. Undo increments every undone
+  row's revision, so the review file it was applied from cannot rebook it. Undo has its own read-back (the
   removed IDs are absent, the owned file is the previous content minus exactly
   the removed spans, balances moved by minus the removed postings); the journal
   records the operation so recovery never validates an undo with apply's checks.
