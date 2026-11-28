@@ -208,8 +208,12 @@ the converter (ofxstatement hashes date, memo and amount, so two identical card
 payments on one day collide) and is not trusted as an identity: the key is
 `(source_account, statement checksum, line ordinal)`, and the period-overlap
 rule decides whether a later statement repeats the line. The overlap rule's line
-matching is **count-aware**: two identical lines in the overlap need two
-identical staged lines.
+matching is **count-aware** on `(post_date, amount, currency, raw_memo)`: two
+identical lines in the overlap need two identical staged lines, and the same
+number in another currency is a different line. A reused line keeps its one
+proposal and is recorded for every statement it appears in
+(`statement_lines`), so each statement's closing-balance assertion knows which
+of its lines are not yet applied.
 
 ### Normaliser
 
@@ -709,6 +713,9 @@ proposals(source_account, line_key,       -- PK (source_account, line_key)
 
 transfers_pending(counterpart_account, amount, currency, window_start, window_end,
                   proposal_id)            -- first side of a cross-batch transfer
+
+statement_lines(statement_checksum, ordinal,  -- PK; every line of every admitted statement
+                source_account, line_key) -- its proposal, also when an earlier statement staged it
 
 batches(batch, operation,                -- PK (batch, operation); apply | undo
         committed_ts)                     -- set with the row updates; recovery then only cleans up

@@ -314,7 +314,8 @@ one does not produce an error — it produces a wrong ledger.
   the previous content) and staging are `0600` in a `0700` directory.
 - **Writes are durable in order.** `fsync` the journal and its directory
   before the exchange; `fsync` the temporary file before the exchange and the
-  owned file's directory after it; `fsync` after removing the journal. An
+  owned file's directory after it; `fsync` the owned file's directory after an exchange back too, before the
+  pre-image is recorded or the journal removed; `fsync` after removing the journal. An
   exchange that survives a power loss while its journal does not is an
   unvalidated batch. Finding IDs in the ledger proves presence, not validation.
 - **Idempotency on re-run.** Before each batch, find created rows by their

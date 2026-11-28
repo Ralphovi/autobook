@@ -278,7 +278,16 @@ when the configuration says the IDs are bank-supplied. Otherwise the ID is
 synthesised by the converter (a hash of date, memo and amount, so two
 identical card payments on one day collide) and is not trusted as an identity:
 the line takes the key `(statement checksum, ordinal)` and the overlap rule
-decides whether a later statement repeats it.
+decides whether a later statement repeats it. The overlap rule compares lines
+count-aware on `(post_date, amount, currency, raw_memo)`: proposal 0002 §3.4's
+tuple plus the **currency**, since an account may hold several and the same
+number in another currency is a different line.
+
+**Membership.** A line repeated by a later statement keeps its one proposal,
+but belongs to both statements. `statement_lines` records every admitted
+statement's lines, the reused ones included, so the closing-balance assertion
+(§10.3 step 7) can find each statement's lines not yet applied from staging
+alone.
 
 ### 6. Classification
 
@@ -669,10 +678,15 @@ check, changes nothing, staging included.
      `closing_balance_date`; a line matched to a posting dated later (the
      match window reaches five days past the line) is counted with the lines
      not yet applied, since its posting is not in the balance on that date.
+     A statement's lines are read from `statement_lines`, so a line an
+     earlier, overlapping statement staged is counted too.
 8. **On any failure in 6 or 7,** restore the previous content — only if the
    file still holds exactly what step 5 wrote — exit 6, and mark nothing
    applied. A row is `applied` only after step 7 passes.
-   The restore is the checked exchange back; afterwards the pre-image path
+   The restore is the checked exchange back, followed by an `fsync` of the
+   owned file's directory before the pre-image is recorded or the journal
+   removed, so a power loss cannot bring the rejected entries back without a
+   journal to recover them. Afterwards the pre-image path
    holds the rejected batch, and staging records it as such (`preimages.kind
    = rejected`, with that content's hash), so it is kept like any other
    displaced version but is not mistaken for a displaced save.
@@ -708,6 +722,8 @@ write the rendered content to a scratch file (`.autobook-tmp-<ULID>`) and
 `fsync` it; rename it to its final pre-image name, which the journal records,
 and `fsync` the owned file's directory — so the final name only ever holds the
 complete rendered content; exchange; `fsync` the owned file's directory again.
+An exchange back is made durable the same way — the directory is `fsync`ed
+before the pre-image is recorded or the journal removed.
 
 **File modes.** The exchange puts the scratch file's inode at the owned path,
 so its metadata becomes the ledger's. The scratch file is created with
@@ -936,6 +952,12 @@ transfers_pending(
   counterpart_account, amount, currency,
   window_start, window_end,
   proposal_id
+)
+
+statement_lines(
+  statement_checksum, ordinal,                 -- PK; every line of every admitted statement
+  source_account, line_key                     -- the proposal it is, also when an earlier
+                                               -- statement staged it (overlap)
 )
 
 batches(
