@@ -427,6 +427,11 @@ accounts appears in two statements. Booking both sides double-books.
   listed first) decides only when both sides represent both movements; when
   neither does, both are queued ("transfer amounts disagree"). An ambiguous
   pairing (two possible counterparts) queues both.
+- The reservation belongs to the **side the pairing keeps**. Whenever the
+  correlator pairs two sides (a later statement brings the other side, or
+  classification shows which side represents both movements), it moves the
+  `transfers_pending` entry under the writer lock, so it blocks only the side
+  that waits, never the one chosen to be booked.
 - The first side of a transfer records a `transfers_pending` entry **at
   proposal**, not only once booked, so the reservation exists before either
   side reaches a batch: counterpart account, amount, currency, date window, its proposal ID.
@@ -1096,13 +1101,18 @@ checked against. `apply` and `undo` recover as follows:
 attended and under the writer lock, is the one way to clear a journal while
 keeping the user's version of the owned file. It records every version it
 holds as a pre-image (`kind = conflict`), leaves the owned file as it is, and
-treats nothing as validated because its proposal ID is present: each of the
+treats nothing as validated because its proposal ID is present. It branches
+on the journal's operation. **For an apply**, each of the
 batch's rows is checked against the current ledger as the read-back would
 (its ID exactly once, the approved date, accounts, amounts and currencies;
 for a matched row, the predicate). A row that passes is marked `applied`,
 because the user, attending, has now accepted the ledger as it stands; a row
 that does not stays unapplied, with the difference listed, and its revision is
-incremented so no old review can book it. Then the journal is removed and its
+incremented so no old review can book it. **For an undo**, the check is
+undo's: a row whose entry is absent is returned to `pending` exactly as a
+successful undo would (`applied_entry` cleared, a matched row's claim
+released to `released_entry`, revision incremented); a row whose entry is
+still present stays `applied`, and is listed. Then the journal is removed and its
 directory `fsync`ed. `--dry-run` lists what it would do.
 
 A row is therefore never `applied` without having passed the read-back and the
@@ -1272,6 +1282,12 @@ Autobook records the host that created the store and refuses (exit 2) a run
 from another host. Sharing one ledger and one store between machines would
 need a lock and a journal every client sees; it is not designed here (see
 *Open questions*).
+
+**One store per owned file.** `autobook init` writes the store's UUID into the
+owned file's header as a comment (`; autobook-store: <UUID>`). Every run
+checks it against the store it opened and refuses (exit 2) a mismatch, so a
+second configuration that points another store at the same owned file cannot
+take a different lock on it.
 
 ```
 statements(

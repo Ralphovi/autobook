@@ -314,7 +314,9 @@ one does not produce an error — it produces a wrong ledger.
   sides are classified, and only the side whose proposed entry represents both
   movements goes on (configuration order breaks a tie); the other is queued as
   "pending transfer". A row with more than one eligible counterpart queues its
-  whole group. A line is also checked amount-independently against entries
+  whole group. The `transfers_pending` reservation is moved to the side the
+  pairing keeps, under the writer lock, so it never blocks the side chosen to
+  be booked. A line is also checked amount-independently against entries
   Autobook already booked from another account's line into this account (same
   sign, within the window, not yet matched here); one found queues the line
   ("transfer amounts disagree") instead of booking a second transfer. `transfers_pending` is recorded at proposal,
