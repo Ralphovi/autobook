@@ -427,7 +427,12 @@ create | create_split | match_existing | out_of_scope | queue
 Confidence under threshold; no rule and kNN distance over the cutoff; the
 proposed account not open on the line's date; a currency the account does not
 allow; an ambiguous or pending match. A queued row carries its reason and
-appears in the review file as `?`.
+appears in the review file as `?`. Where it has no usable destination (none
+proposed, or one not open on the line's date), its account column shows the
+placeholder `(none)`; the parser accepts `(none)` on a row left at `?`, `s` or
+`x`, and aborts only when a row marked `a` has `(none)` or an account that is
+not open. A queued row saved unchanged therefore never blocks the rest of the
+file.
 
 A payment whose parts change every period — a loan instalment's interest and
 principal — cannot be split from the statement line. It is queued. If the user
@@ -666,8 +671,13 @@ check, changes nothing, staging included.
      the recorded entry still passes the predicate, unclaimed by another row).
 7. **Assert.**
    - The load reports no error that step 1 did not report.
-   - No byte of the owned file before the appended entries changed, and no
-     other file changed.
+   - The owned file's SHA-256 is exactly the rendered content's, and no other
+     file changed. Checking only the bytes before the appended entries would
+     miss an edit inside them (a changed narration keeps IDs, amounts and
+     balances). A mismatch is a save that got in after the exchange: it is
+     not exchanged away. Autobook keeps that version at the owned path and
+     the previous content as the pre-image, marks nothing applied and exits
+     with code 4 for the user to resolve, as for any conflict (§10.6).
    - Every kept pre-image, this batch's included, still has its recorded hash.
      This is the last check before the rows are marked applied; a mismatch is
      a save that got into an old file and rolls the batch back.
@@ -680,8 +690,10 @@ check, changes nothing, staging included.
      (queued, out of scope, pending transfer, skipped). A line not yet applied
      can still be in the ledger already, for example a skipped line whose
      hand-written entry exists. So before subtracting, the writer runs each
-     such line's match predicate (claims ignored): a line with no candidate
-     is subtracted; a line with any candidate makes the statement's
+     such line's match predicate (claims ignored), counting only candidates
+     dated on or before `closing_balance_date`, since a later posting cannot
+     be in the balance on that date: a line with no such candidate is
+     subtracted; a line with one makes the statement's
      representation ambiguous, and the closing-balance assertion is
      **deferred** for that statement — reported in `apply-out` and by
      `autobook status`, never failed and never satisfied by marking the line
@@ -729,7 +741,12 @@ the errors the first load reported, and the first load's balance of every
 account. It is removed only after staging is updated.
 
 **Durability.** A journal that can be lost while the exchange survives is no
-journal. The order is: write the journal and `fsync` it and its directory;
+journal, and a half-written journal blocks every command without telling
+recovery anything. The order is: write the journal to a scratch name
+(`.journal-tmp-<ULID>`) and `fsync` it, rename it to its final name and
+`fsync` its directory, so the final name only ever holds a complete journal
+(a scratch journal left by a crash is removed: no exchange follows before the
+rename);
 write the rendered content to a scratch file (`.autobook-tmp-<ULID>`) and
 `fsync` it; rename it to its final pre-image name, which the journal records,
 and `fsync` the owned file's directory — so the final name only ever holds the
@@ -1039,7 +1056,7 @@ gates are pre-marked `a`; everything else is `?`.
 - **Parse by ID, never by position.** Reordering or deleting rows must not
   misalign anything. An unknown ID is an error.
 - **Strict parser.** An unknown status, an account that is not open in the
-  ledger, or a date, amount or currency that differs from staging aborts the whole file with a
+  ledger on a row marked `a` (a `?`, `s` or `x` row may keep `(none)`, §8.1), or a date, amount or currency that differs from staging aborts the whole file with a
   line number (exit 5) and applies nothing. The date is a statement fact, like
   the amount: it is shown, never edited. So does a destination account, or
   a split's destination posting, equal to the row's source account. A

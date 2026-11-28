@@ -196,12 +196,14 @@ one does not produce an error — it produces a wrong ledger.
   read-back.
 - **The assertions.** The load reports no error it did not report before the
   write. No byte of the owned file before the appended entries changed, and no
-  other file changed. The balance of every account the batch wrote postings to
+  other file changed — the owned file's hash is exactly the rendered content's,
+  so an edit inside the appended entries is caught; such a save is kept as a
+  conflict (exit 4), never exchanged away. The balance of every account the batch wrote postings to
   moved by exactly the sum of those postings, and no other balance moved; a
   matched row writes none and moves nothing. Where the statement states a closing balance, the ledger's balance
   on that date equals it minus the statement's lines not yet applied. A line
   not yet applied that has any match candidate may already be in the ledger:
-  then the closing-balance assertion is deferred and reported, never failed
+  then (counting only candidates dated by the closing date) the closing-balance assertion is deferred and reported, never failed
   and never satisfied by marking the line applied.
 - **Money is exact.** Amounts are `Decimal` built from **integer cents** and
   printed with exactly two decimals. Never floats, in any code path, including
@@ -319,8 +321,9 @@ one does not produce an error — it produces a wrong ledger.
   decide who reads the ledger. Refuse (exit 4) an owned file not owned by the
   running user or carrying an ACL or extended attributes. The journal (it holds
   the previous content) and staging are `0600` in a `0700` directory.
-- **Writes are durable in order.** `fsync` the journal and its directory
-  before the exchange; `fsync` the temporary file before the exchange and the
+- **Writes are durable in order.** Write the journal under a scratch name,
+  `fsync` it, rename it to its final name and `fsync` its directory, all
+  before the exchange, so a live journal is always complete; `fsync` the temporary file before the exchange and the
   owned file's directory after it; `fsync` the owned file's directory after an exchange back too, before the
   pre-image is recorded or the journal removed; `fsync` after removing the journal. An
   exchange that survives a power loss while its journal does not is an

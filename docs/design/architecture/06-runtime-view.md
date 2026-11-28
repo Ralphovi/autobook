@@ -244,8 +244,9 @@ whole or not at all.
      exactly one candidate: that entry.
 7. **Assert.**
    - The load reports no error that step 1 did not report.
-   - No byte of the owned file before the appended entries changed, and no
-     other file changed.
+   - The owned file's hash is exactly the rendered content's (an edit inside
+     the appended entries is caught, and kept as a conflict, exit code 4, never
+     exchanged away), and no other file changed.
    - Every kept pre-image, this batch's included, still has its recorded hash.
      This is the last check before the rows are marked applied; a mismatch is
      a save that got into an old file and rolls the batch back.
