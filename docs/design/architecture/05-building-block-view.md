@@ -723,8 +723,9 @@ transfers_pending(counterpart_account, amount, currency, window_start, window_en
 statement_lines(statement_checksum, ordinal,  -- PK; every line of every admitted statement
                 source_account, line_key) -- its proposal, also when an earlier statement staged it
 
-batches(batch, operation,                -- PK (batch, operation); apply | undo
-        committed_ts)                     -- set with the row updates; recovery then only cleans up
+operations(operation_id PK,              -- a ULID per apply or undo attempt, also in its journal
+           batch, operation,              -- apply | undo
+           committed_ts)                  -- set with the row updates; recovery then only cleans up
 
 preimages(path PK,                        -- .autobook-preimage-<batch>-<ULID>: the exchange's temporary file, never renamed
           batch, operation,               -- apply | undo

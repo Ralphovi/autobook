@@ -304,7 +304,7 @@ of the temporary file (which holds the swapped-out content after the exchange),
 the errors the first load reported, and the first load's balance of every
 account. It is removed only after staging is updated. The staging
 transaction that marks the rows also records the batch as committed
-(`batches`); a journal found for a committed batch is only cleaned up, never
+(`operations`, keyed by an ID per apply or undo attempt that the journal also holds); a journal whose operation is committed is only cleaned up, never
 validated or rolled back again. `propose`, and a `decide` that would record a
 decision, refuse while a journal exists.
 

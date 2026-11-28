@@ -163,8 +163,11 @@ one does not produce an error — it produces a wrong ledger.
 - **Compare before replacing.** Nothing is written if any ledger file changed
   since it was read, and the resolved include set (globs expanded) is part of
   what is compared; the compare is repeated after the journal and temporary
-  file are durable, immediately before the exchange. Hash every file before and after each load and repeat the
-  load if a hash moved, so the hashes describe the bytes Beancount parsed. The replace is one atomic **exchange** (`renameat2` with
+  file are durable, immediately before the exchange. Load from a snapshot: read each
+  file once, hash those bytes, copy them to a private directory and let
+  Beancount parse the copy, then compare the live files and include set with
+  the snapshot and retake it if anything moved, so the hashes are of the bytes
+  Beancount parsed. The replace is one atomic **exchange** (`renameat2` with
   `RENAME_EXCHANGE`) with a file written and flushed in the same directory,
   never a plain rename. The swapped-out file is never deleted and never renamed:
   the temporary file is given its final, operation-unique pre-image name
@@ -259,7 +262,8 @@ one does not produce an error — it produces a wrong ledger.
   nothing is matched, classified or decided against a batch that was written
   but not validated; `apply` or `undo` recover it first.
 - **A committed batch is never rolled back.** The staging transaction that
-  marks the rows records the batch as committed; a journal left after that
+  marks the rows records the operation (an ID per apply or undo attempt, also
+  in its journal) as committed; a journal left after that
   commit is only cleaned up, never validated or restored again.
 - **A changed pre-image blocks writing.** `propose`, `apply` and `undo` re-hash every
   kept pre-image first, again in the compare before the exchange and again as

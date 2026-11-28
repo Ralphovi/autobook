@@ -671,9 +671,13 @@ check, changes nothing, staging included.
 
 1. **Read.** Load the ledger: errors, accounts, existing Autobook IDs, and the
    SHA-256 of every file. The hashes must describe the bytes Beancount
-   parsed, so every file is hashed before and again after the load; if any
-   hash differs, a save got in during the load, and the load is repeated (up
-   to three times, then exit 4). Every later load (the read-back, the fresh
+   parsed, so the load is taken from a **snapshot**: every ledger file is read
+   once into memory, hashed, and written into a private directory (mode
+   `0700`) under the same relative paths, and Beancount loads that copy, never
+   the live files. The live files and the include set are then compared with
+   the snapshot; if any differs, a save got in, and the snapshot is taken
+   again (up to three times, then exit 4). A save that is undone during the
+   load cannot slip through, because the parse never reads the live file. Every later load (the read-back, the fresh
    load of a matched-only batch, recovery) is taken the same way. The
    **include set** is part of the snapshot: the list of files the load
    resolved (globs expanded) is recorded, compared before and after each
@@ -919,9 +923,11 @@ checked against. `apply` and `undo` recover as follows:
 
 - **Staging already records the batch as committed.** The staging transaction
   that marks the rows `applied` (or, for an undo, `pending`) also records the
-  journal's batch and operation as committed (`batches.committed_ts`). A crash
+  journal's **operation ID** as committed (`operations.committed_ts`). Each
+  apply or undo attempt has its own ID, written in its journal, so an earlier
+  undo of the same batch is never mistaken for this one. A crash
   after that commit and before the journal is removed leaves a journal for a
-  finished operation. Recovery checks staging first: if the batch is
+  finished operation. Recovery checks staging first: if the operation is
   committed, it only finishes the cleanup — records the pre-image if that was
   not yet done, removes the journal and `fsync`s its directory — and never
   validates or rolls back again. The cases below apply only to a batch staging
@@ -1162,10 +1168,12 @@ reviews(
   version_tuple, row_revisions, ts             -- the tuple and each listed row's revision when written
 )
 
-batches(
-  batch, operation,                            -- PK; apply | undo
+operations(
+  operation_id,                                -- PK; a ULID per apply or undo attempt, also in its journal
+  batch, operation,                            -- apply | undo; a batch applied, undone and applied
+                                               -- again has three operations
   committed_ts                                 -- set in the same transaction that marks the rows;
-                                               -- a journal for a committed batch is only cleaned up
+                                               -- a journal whose operation is committed is only cleaned up
 )
 
 preimages(
