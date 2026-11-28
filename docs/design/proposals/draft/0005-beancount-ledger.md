@@ -266,8 +266,11 @@ reason recorded and no line staged, if:
 - the lines do not add up to the statement's balances, where it states them;
 - its period overlaps an admitted statement in a way the overlap rule cannot
   resolve (proposal 0002 §3.4);
-- a line repeats a known bank ID with a different date, amount or currency,
-  or a bank ID occurs twice in the statement (see *Dedup*).
+- for an account whose IDs the configuration declares **bank-supplied**: a
+  line repeats a known bank ID with a different date, amount or currency, or
+  a bank ID occurs twice in the statement (see *Dedup*). Synthesised IDs can
+  collide legitimately (two identical payments) and go to the count-aware
+  overlap rule instead.
 
 Every decision is recorded in `statements` with the file's checksum. Handing
 over a file that was already **admitted** changes nothing. A file that was
@@ -413,12 +416,16 @@ accounts appears in two statements. Booking both sides double-books.
 - **Both sides staged before either is booked.** When both statements arrive
   before either side is in the ledger, neither search finds anything. So the
   correlator also pairs unbooked staged lines: two lines in two of the user's
-  accounts, with opposite amounts in the same currency, within the window,
-  each pointing at the other's account. Only the **canonical side** (the
-  account listed first in the configuration) goes on to classification; the
-  other is queued as "pending transfer" and resolves through
-  `match_existing` once the canonical side is applied. An ambiguous pairing
-  (two possible counterparts) queues both.
+  accounts, with opposite-signed amounts in the same currency, within the
+  window, each pointing at the other's account (the amounts may differ by a
+  fee). **Both sides are classified first**, so each has its proposed
+  postings (a −105 line's +100 transfer and 5 fee split). Then the side whose
+  proposed entry represents both movements goes on; the other is queued as
+  "pending transfer" and resolves through `match_existing` once the first is
+  applied. The configuration order (the **canonical side**, the account
+  listed first) decides only when both sides represent both movements; when
+  neither does, both are queued ("transfer amounts disagree"). An ambiguous
+  pairing (two possible counterparts) queues both.
 - The first side of a transfer records a `transfers_pending` entry **at
   proposal**, not only once booked, so the reservation exists before either
   side reaches a batch: counterpart account, amount, currency, date window, its proposal ID.
@@ -856,12 +863,14 @@ check, changes nothing, staging included.
      on A's date, while this account's bank may credit it later (B's July 1).
      A posting in this account dated on or before the closing date, created
      from another account's line and not yet matched by any staged line of
-     this account, is added to the expected balance **only when an admitted
-     statement of this account covers its date** (its period contains the
-     date) and has no line for it within the window: then the bank provably
-     had not booked it by then. Where no admitted statement covers the date
-     (this account's first statement starts later, so its opening balance may
-     already include the credit), the assertion is deferred and reported. If this account's own staged line for it is dated on
+     this account, is added to the expected balance **only when admitted
+     statements of this account cover every date the bank could have booked
+     it on** — from the posting's date minus the match window through the
+     closing date — and none has a line for it: then the bank provably
+     had not booked it by then. Where that span is not covered (this
+     account's first statement starts June 1 and the posting is June 2, so
+     the bank may have booked it on May 31 and the opening balance already
+     include it), the assertion is deferred and reported. If this account's own staged line for it is dated on
      or before the closing date, it would have matched; if it exists but is
      still unapplied, the candidate rule above defers. Both arrival orders of
      the two statements give the same result.

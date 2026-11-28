@@ -155,7 +155,8 @@ one does not produce an error — it produces a wrong ledger.
   admission check (parse, a line without date, amount or currency, an unknown
   account ID, a currency the ledger account does not declare, lines that do not
   add up to the stated balances, an overlap the rule cannot resolve, a repeated bank ID whose date, amount or
-  currency differs from the staged line, a bank ID twice in one statement) is
+  currency differs from the staged line, a bank ID twice in one statement —
+  both only where the IDs are bank-supplied) is
   rejected whole, its reason recorded, and no line of it is staged.
 - **A batch is booked whole or not at all.** A failed read-back or assertion
   restores the previous content of the owned file and marks nothing applied.
