@@ -160,7 +160,8 @@ one does not produce an error — it produces a wrong ledger.
   restores the previous content of the owned file and marks nothing applied.
   There is no partial batch.
 - **Compare before replacing.** Nothing is written if any ledger file changed
-  since it was read. The replace is one atomic **exchange** (`renameat2` with
+  since it was read. Hash every file before and after each load and repeat the
+  load if a hash moved, so the hashes describe the bytes Beancount parsed. The replace is one atomic **exchange** (`renameat2` with
   `RENAME_EXCHANGE`) with a file written and flushed in the same directory,
   never a plain rename. The swapped-out file is never deleted and never renamed:
   the temporary file is given its final, operation-unique pre-image name
@@ -284,7 +285,12 @@ one does not produce an error — it produces a wrong ledger.
   metadata and file position. Never by file and line: both move whenever anything above the
   entry is edited.
 - **A transfer is booked once.** Every transfer row goes through a
-  source-account `match_existing` search *before* classification. The second
+  source-account `match_existing` search *before* classification. When both
+  sides are staged before either is booked, the correlator pairs them and only
+  the canonical side (first in the configuration) is classified; the other is
+  queued as "pending transfer". `transfers_pending` is recorded at proposal,
+  and apply queues the second of two created rows that are one transfer's two
+  sides. The second
   side of a transfer whose first side was booked in an earlier batch resolves
   to the entry the first side created. An unmatched second side whose
   counterpart is in `transfers_pending`, with the same amount and currency, is queued as "pending transfer", never
@@ -326,7 +332,8 @@ one does not produce an error — it produces a wrong ledger.
   `fsync` it, rename it to its final name and `fsync` its directory, all
   before the exchange, so a live journal is always complete; `fsync` the temporary file before the exchange and the
   owned file's directory after it; `fsync` the owned file's directory after an exchange back too, before the
-  pre-image is recorded or the journal removed; `fsync` after removing the journal. An
+  pre-image is recorded or the journal removed; `fsync` after removing the journal. Recovery `fsync`s the owned file's
+  directory before it commits a validated exchange to staging. An
   exchange that survives a power loss while its journal does not is an
   unvalidated batch. Finding IDs in the ledger proves presence, not validation.
 - **Idempotency on re-run.** Before each batch, find created rows by their

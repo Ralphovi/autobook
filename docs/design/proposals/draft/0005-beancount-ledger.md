@@ -401,8 +401,18 @@ accounts appears in two statements. Booking both sides double-books.
 
 - Runs **before** classification. Every transfer line first goes through a
   `match_existing` search in its own source account.
-- The first side of a transfer is booked and records a `transfers_pending`
-  entry: counterpart account, amount, currency, date window, its proposal ID.
+- **Both sides staged before either is booked.** When both statements arrive
+  before either side is in the ledger, neither search finds anything. So the
+  correlator also pairs unbooked staged lines: two lines in two of the user's
+  accounts, with opposite amounts in the same currency, within the window,
+  each pointing at the other's account. Only the **canonical side** (the
+  account listed first in the configuration) goes on to classification; the
+  other is queued as "pending transfer" and resolves through
+  `match_existing` once the canonical side is applied. An ambiguous pairing
+  (two possible counterparts) queues both.
+- The first side of a transfer records a `transfers_pending` entry **at
+  proposal**, not only once booked, so the reservation exists before either
+  side reaches a batch: counterpart account, amount, currency, date window, its proposal ID.
   A pending-transfer lookup requires the currency to be equal too; the same
   number in another currency is not the counterpart.
 - The second side resolves to the entry the first side created — it has a
@@ -629,7 +639,11 @@ check, changes nothing, staging included.
 (§10.4).
 
 1. **Read.** Load the ledger: errors, accounts, existing Autobook IDs, and the
-   SHA-256 of every file. The owned file must be among them, with matching
+   SHA-256 of every file. The hashes must describe the bytes Beancount
+   parsed, so every file is hashed before and again after the load; if any
+   hash differs, a save got in during the load, and the load is repeated (up
+   to three times, then exit 4). Every later load (the read-back, the fresh
+   load of a matched-only batch, recovery) is taken the same way. The owned file must be among them, with matching
    root-name options, and every kept pre-image must still have its recorded
    hash: a changed pre-image is a save the owned file does not contain.
    Otherwise exit 4, until the user has resolved it.
@@ -645,7 +659,12 @@ check, changes nothing, staging included.
    against the ledger as loaded in step 1: exactly one candidate must remain,
    and it must be the row's `matched_entry`; the account must have no orphaned
    claim. For a row rebound by the user (§8.2), the recorded entry must pass
-   the match predicate and be unclaimed by another row.
+   the match predicate and be unclaimed by another row. **Batch-level:** if
+   two created rows in the batch are the two sides of one transfer (each posts
+   to the other's source account, opposite amounts, same currency, within the
+   window), only the canonical side stays and the other is queued as "pending
+   transfer" — the balance-movement assertion would otherwise expect both
+   writes and not see the duplicate.
    A row that fails is queued.
    **A batch with no created rows** (only matched rows) writes nothing: steps
    4 and 5 are skipped, no journal or pre-image is made, and the ledger is
@@ -822,7 +841,10 @@ checked against. `apply` and `undo` recover as follows:
   previous content do steps 6 and 7 run — for an undo, its own checks
   (§10.5) —, against the journal's baseline and not against the ledger as
   it stands: the other files' hashes, the errors and the balances are the
-  journal's. If they pass, the rows are marked applied. If they fail — also
+  journal's. If they pass, the owned file's directory is `fsync`ed first —
+  the exchange may not yet be durable if the crash came right after it — and
+  only then are the rows marked applied (or, for an undo, returned to
+  `pending`). If they fail — also
   because another ledger file changed in the meantime, so that the batch can
   no longer be validated — the previous content is restored (exit 6) and the
   batch can be applied again.

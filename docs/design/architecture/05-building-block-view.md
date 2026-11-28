@@ -356,7 +356,12 @@ edit (section 8.8).
 
 The only pipeline component with a cross-account view, which staging gives it.
 Pairs the two sides of transfers between the user's own accounts and emits the
-transfer from one canonical side. Without it every transfer is booked twice.
+transfer from one canonical side (the account listed first in the
+configuration). When both sides are staged before either is booked, the other
+side is queued as "pending transfer" and resolves through `match_existing` once
+the canonical side is applied; `transfers_pending` is recorded at proposal, and
+apply queues the second of two created rows in one batch that are the same
+transfer. Without it every transfer is booked twice.
 
 Transfers also span batches. Every transfer row first goes through a
 `match_existing` search in its **source** account, before classification: the
