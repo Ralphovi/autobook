@@ -230,7 +230,10 @@ whole or not at all.
    included. If any differs from step
    1, stop: exit code 4, nothing written. Otherwise write the batch journal and
    make it durable (see *Recovery*), then write a temporary file in the same
-   directory, `fsync` it, **exchange** it with the owned file in one atomic
+   directory and `fsync` it; then **compare again**, immediately before the
+   exchange — every file's hash, the resolved include set and every kept
+   pre-image — and stop with exit code 4 if anything moved during that
+   preparation; only then **exchange** it with the owned file in one atomic
    step (`renameat2` with `RENAME_EXCHANGE`), check that what was swapped out
    is exactly the content the batch was rendered from (otherwise exchange back,
    so the saved edit is in place again, and exit 4), and `fsync` the
@@ -330,12 +333,16 @@ Every `propose`, `apply` and `undo` first looks for a journal, under the writer 
   resolve. It is never deleted. Then the batch is applied from the start.
 - It has the *after* hash: the batch was written and never validated. First
   the swapped-out file at the journal's temporary path is checked. If it is
-  not the owned file's previous content, a save got in just before the
+  missing, the journal is kept and the run exits with code 4. If it is
+  not the owned file's previous content, or its metadata differs from what
+  the journal recorded, a save or a permission change got in just before the
   exchange: Autobook exchanges back, so the saved edit is at the owned path
   again, marks nothing applied and exits with code 4. Only if it is the
   previous content do steps 6 and 7 run, against the journal's baseline and not against the ledger as
   it stands: the other files' hashes, the errors and the balances are the
-  journal's. If they pass, the rows are marked applied. If they fail — also
+  journal's. If they pass, the owned file's directory is `fsync`ed — the
+  exchange may not yet be durable if the crash came right after it — and only
+  then are the rows marked applied (for an undo, returned to `pending`). If they fail — also
   because another ledger file changed in the meantime, so that the batch can
   no longer be validated — the previous content is restored (exit 6) and the
   batch can be applied again.
