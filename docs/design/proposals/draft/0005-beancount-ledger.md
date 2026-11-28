@@ -462,8 +462,11 @@ writes that entry by hand, the line resolves as `match_existing`.
 The statement line is already in the ledger: the user wrote it by hand, or it
 is the second side of a transfer.
 
-- **Search** the line's **source** account for a posting with the same amount
-  **and the same currency** within ±5 days that is not already claimed for that source account. Whether
+- **Search** the line's **source** account for an entry whose **net movement
+  in that account and currency** equals the line's amount — the sum of all
+  its postings there, so an entry with −100 and +20 in the account (net −80)
+  does not match a −100 line — within ±5 days, that is not already claimed
+  for that source account. Whether
   the user has asserted a balance since is not a filter.
 - **Unambiguous** → nothing is created. Staging records the candidate in
   `matched_entry`; `applied_entry` is set only once the batch has been
@@ -671,7 +674,11 @@ check, changes nothing, staging included.
    parsed, so every file is hashed before and again after the load; if any
    hash differs, a save got in during the load, and the load is repeated (up
    to three times, then exit 4). Every later load (the read-back, the fresh
-   load of a matched-only batch, recovery) is taken the same way. The owned file must be among them, with matching
+   load of a matched-only batch, recovery) is taken the same way. The
+   **include set** is part of the snapshot: the list of files the load
+   resolved (globs expanded) is recorded, compared before and after each
+   load, and compared again with every re-hash before the exchange, so a new
+   file that starts matching an `include` glob counts as a change. The owned file must be among them, with matching
    root-name options, and every kept pre-image must still have its recorded
    hash: a changed pre-image is a save the owned file does not contain.
    Otherwise exit 4, until the user has resolved it.

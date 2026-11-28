@@ -161,7 +161,8 @@ one does not produce an error — it produces a wrong ledger.
   restores the previous content of the owned file and marks nothing applied.
   There is no partial batch.
 - **Compare before replacing.** Nothing is written if any ledger file changed
-  since it was read; the compare is repeated after the journal and temporary
+  since it was read, and the resolved include set (globs expanded) is part of
+  what is compared; the compare is repeated after the journal and temporary
   file are durable, immediately before the exchange. Hash every file before and after each load and repeat the
   load if a hash moved, so the hashes describe the bytes Beancount parsed. The replace is one atomic **exchange** (`renameat2` with
   `RENAME_EXCHANGE`) with a file written and flushed in the same directory,
@@ -238,7 +239,8 @@ one does not produce an error — it produces a wrong ledger.
   and copies it to `applied_entry` only after the batch is validated.
   `applied_entry` means validated, never merely proposed.
 - **`match_existing` searches the row's source account**, not the target
-  account, for a posting with the row's amount **and currency** (an account
+  account, for an entry whose net movement in that account (the sum of its
+  postings there) equals the row's amount **and currency** (an account
   may hold several currencies; the number alone is not a match), and its candidates are entries not already claimed **for that
   source account**: an entry is claimed for an account when a staged row of
   that account created it (its proposal ID, once applied) or matched it
