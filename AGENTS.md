@@ -343,8 +343,9 @@ one does not produce an error — it produces a wrong ledger.
   becomes the row's match. The second
   side of a transfer whose first side was booked in an earlier batch resolves
   to the entry the first side created. An unmatched second side whose
-  counterpart is in `transfers_pending`, with the same amount and currency, is queued as "pending transfer", never
-  classified.
+  counterpart is in `transfers_pending`, with the same amount and currency, is queued as "pending transfer": still
+  classified, so both sides' proposals can be compared, but never pre-marked or
+  booked while the reservation stands.
 - **An interrupted batch is validated before it counts.** Before the replace,
   write the batch journal in the store's state directory (keyed by its UUID). It holds the complete
   baseline the assertions need: proposal IDs, the hash of every loaded file,

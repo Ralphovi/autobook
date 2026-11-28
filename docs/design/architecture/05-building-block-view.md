@@ -369,7 +369,7 @@ second side of a transfer booked in an earlier batch resolves to the entry the
 first side created, which has a posting in both accounts. A transfer booked
 from one side records a `transfers_pending` entry (counterpart account, amount, currency,
 date window, the first side's proposal ID). An unmatched second side whose
-counterpart is pending, with the same amount and currency, is queued as "pending transfer", never classified.
+counterpart is pending, with the same amount and currency, is queued as "pending transfer": still classified, so both proposals can be compared, but never pre-marked or booked while the reservation stands.
 
 PayPal follows the configuration key `paypal_mode`:
 

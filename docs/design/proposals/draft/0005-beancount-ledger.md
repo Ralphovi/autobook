@@ -433,12 +433,15 @@ accounts appears in two statements. Booking both sides double-books.
   number in another currency is not the counterpart.
 - The second side resolves to the entry the first side created — it has a
   posting in both accounts — and is never booked again. An unmatched second
-  side whose counterpart is pending is queued as "pending transfer", never
-  classified.
+  side whose counterpart is pending is queued as "pending transfer": it is
+  still **classified**, so the side choice above can compare both proposals
+  (and honour the configuration order), but it is never pre-marked and never
+  booked while the reservation stands.
 - **A booked side whose amount differs.** The exact search misses a first side
   that was booked with another amount (A's −105 booked as +105 to B, B's later
-  line +98). So a line, and at apply every created row whose destination is
-  one of the user's own accounts, is also checked **amount-independently**
+  line +98). So a line, and at apply every created row whose destination or any
+  split leg (summed per account and currency) is one of the user's own
+  accounts, is also checked **amount-independently**
   against booked entries: an entry Autobook created from another account's
   line, with a posting in this line's account of the same sign, within the
   window, not yet matched by any line of this account. Such an entry is a
