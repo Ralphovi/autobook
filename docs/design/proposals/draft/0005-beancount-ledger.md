@@ -649,6 +649,14 @@ and records decisions. Before it records any decision it checks the
 validated one, and the classifier and normaliser versions every row in the
 file was proposed under must be current; otherwise exit 3, nothing recorded —
 a review generated before a rule or model change is re-proposed, not booked.
+**The file must be the current review.** `review-file` writes a header line
+`# autobook-review <ULID>` and records that review in staging (`reviews`)
+with the version tuple and each row's revision; a re-proposal of a row
+increments its `revision`. `decide` and `apply` refuse (exit 3, nothing
+recorded) a file whose header is missing or names no recorded review, whose
+review's tuple is no longer the validated one, or that lists a row whose
+revision has changed since the review was written. An older review of a
+re-proposed row can therefore never pass as an account edit.
 **The batch is exactly the rows marked `a` in this file.** A row that an
 earlier `decide` left `approved` but that this file omits or no longer marks
 `a` is not booked, and returns to `pending`; a stored approval is never a
@@ -791,6 +799,12 @@ check, changes nothing, staging included.
      balance, so the posting's amount is added to the expected balance. A
      line dated after the closing date that is not yet applied but has a
      candidate dated on or before it defers the assertion, as above.
+     **An intraday cutoff.** Where `closing_balance_time` is set and is not
+     the end of the day, the bank's balance may exclude some of that day's
+     movements, and a date-only ledger cannot say which. If the account has
+     any posting on `closing_balance_date` — in the ledger or among the lines
+     not yet applied — the assertion is deferred with the reason "intraday
+     cutoff" and reported; otherwise it runs as above.
      A closing balance is cumulative, so "the lines" are **every staged line
      of that source account** up to the closing date, from this statement and
      from every earlier admitted one: a January line still pending is in
@@ -1056,7 +1070,14 @@ rename.
 
 ### 11. Staging
 
-SQLite under `$XDG_DATA_HOME` by default; a PostgreSQL URI as an option.
+SQLite under `$XDG_DATA_HOME` by default; a PostgreSQL URI as an option. The
+writer lock and the batch journal live in a local directory beside the
+configuration, not in the database, so they bind only the clients of one
+machine. A PostgreSQL store is therefore supported for **one machine only**:
+Autobook records the host that created the store and refuses (exit 2) a run
+from another host. Sharing one ledger and one store between machines would
+need a lock and a journal every client sees; it is not designed here (see
+*Open questions*).
 
 ```
 statements(
@@ -1067,6 +1088,7 @@ statements(
   balance_currency,                            -- the stated balances' currency
   closing_balance_date,                        -- the closing balance's as-of date (OFX
                                                -- LEDGERBAL DTASOF), which may differ from period_end
+  closing_balance_time,                        -- its time of day if DTASOF carries one, else NULL
   status, reason, admitted_ts                  -- admitted|rejected
 )
 
@@ -1087,6 +1109,7 @@ proposals(
   matched_entry,                               -- match_existing: the candidate found at proposal, its
                                                -- autobook-id if it has one, else its content hash
   match_source,                                -- search | rebound (the user chose it, §8.2)
+  revision,                                    -- incremented on every re-proposal of the row
   released_entry,                              -- the matched_entry an undo released; audit only, claims nothing
   status,                                      -- pending|approved|skipped|rejected|applied
                                                -- skipped: `s` in the review file; releases the
@@ -1107,6 +1130,11 @@ statement_lines(
   statement_checksum, ordinal,                 -- PK; every line of every admitted statement
   source_account, line_key                     -- the proposal it is, also when an earlier
                                                -- statement staged it (overlap)
+)
+
+reviews(
+  review_id,                                   -- PK; ULID in the review file's header
+  version_tuple, row_revisions, ts             -- the tuple and each listed row's revision when written
 )
 
 batches(
@@ -1609,3 +1637,7 @@ What misreports silently if this is subtly wrong:
 - **Synthetic corpus rows.** Deferred, as before: they would make a novel
   merchant look familiar and invalidate the backtest.
 - **Where the conversion tool lives** after B1.
+- **More than one machine.** A PostgreSQL staging store shared by several
+  hosts would need a writer lock and a batch journal every client sees (for
+  example an advisory lock and a journal table in the database, with the
+  ledger on a shared file system). v1 refuses a run from another host.

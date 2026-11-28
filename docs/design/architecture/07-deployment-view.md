@@ -45,7 +45,9 @@ one checked atomic exchange (Linux `renameat2`), read back, restore on failure â
 The ledger and the staging store belong together: staging records what was
 proposed, approved and applied to this ledger. Proposal 0005 does not describe
 booking into one ledger from more than one machine. A PostgreSQL staging store
-is the only piece that could be shared, and nothing is designed around that.
+is the only piece that could be shared, and nothing is designed around that:
+the writer lock and the batch journal are local files, so Autobook refuses a
+run against a PostgreSQL store from a host other than the one that created it.
 
 ## 7.2 What gets installed
 

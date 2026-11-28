@@ -751,7 +751,9 @@ passed.
 Amounts are integer cents. Document fields are IDs and counts, never content.
 
 Staging is SQLite under `$XDG_DATA_HOME` by default, with a PostgreSQL URI as
-an option. No production staging data exists; this schema is the first released
+an option, for one machine only: the writer lock and the batch journal are
+local files, so a run from another host is refused (exit 2; proposal 0005
+§11). No production staging data exists; this schema is the first released
 one.
 
 ## 5.3 Ledger package components

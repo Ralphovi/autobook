@@ -301,7 +301,7 @@ one does not produce an error — it produces a wrong ledger.
   decides only when both qualify, and neither qualifying queues both. Apply also searches again, in both accounts against the live ledger,
   for every created row whose destination, or any split posting, is one of
   the user's own accounts (a split posting with its own amount), and queues it
-  if a search finds a candidate This screen ignores claims: an
+  if a search finds a candidate. This screen ignores claims: an
   entry already claimed in that account still queues the row, though it never
   becomes the row's match. The second
   side of a transfer whose first side was booked in an earlier batch resolves
@@ -377,7 +377,10 @@ one does not produce an error — it produces a wrong ledger.
   pending. Exit with the documented code and the reason; the driver notifies.
   The version gate is checked at `propose` and again at `decide` and `apply`
   before any decision is recorded, so a review generated before a rule or
-  model change is never booked.
+  model change is never booked. The review file's header names a review
+  recorded in staging with the version tuple and every row's revision; a file
+  whose review is unknown or stale, or that lists a re-proposed row, is
+  refused (exit 3).
 - **Autobook does not second-guess a well-formed statement.** It cannot know
   how an OFX file was produced. It checks the file for consistency and its own
   work for correctness, and it never "repairs" a statement.
