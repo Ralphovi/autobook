@@ -200,11 +200,12 @@ one does not produce an error — it produces a wrong ledger.
   read-back finds its proposal ID exactly once with the approved date, accounts,
   and each posting's amount and currency. A matched row wrote nothing, so its ID is not looked for: its
   search, run again, must find exactly one candidate and it must be the recorded
-  entry. The search runs at proposal, again at apply, and again in the
+  entry — except for a row the user rebound, whose recorded entry must pass the
+  full predicate, unclaimed, but need not be the only candidate. The search runs at proposal, again at apply, and again in the
   read-back.
 - **The assertions.** The load reports no error it did not report before the
-  write. No byte of the owned file before the appended entries changed, and no
-  other file changed — the owned file's hash is exactly the rendered content's,
+  write. No other file changed, and the owned file's hash is exactly the
+  rendered content's,
   so an edit inside the appended entries is caught; such a save is kept as a
   conflict (exit 4), never exchanged away. If only another file changed and
   the owned file still holds the rendered content, the batch is rolled back
@@ -215,7 +216,10 @@ one does not produce an error — it produces a wrong ledger.
   yet applied, from every admitted statement (a closing balance is cumulative). A line
   not yet applied that has any match candidate may already be in the ledger:
   then (counting only candidates dated by the closing date) the closing-balance assertion is deferred and reported, never failed
-  and never satisfied by marking the line applied.
+  and never satisfied by marking the line applied. Where the bank's balance
+  carries a time before the end of the day and the account has any movement
+  on that date, the assertion is likewise deferred ("intraday cutoff"): a
+  date-only ledger cannot say which of that day's movements the bank counted.
 - **Money is exact.** Amounts are `Decimal` built from **integer cents** and
   printed with exactly two decimals. Never floats, in any code path, including
   tests and fixtures; the hazard is `Decimal(float)`, which accepts a float
@@ -316,7 +320,7 @@ one does not produce an error — it produces a wrong ledger.
   comparison also runs against staged rows outside the batch, so a plain side
   waits ("pending transfer") while the fee-bearing side is still undecided. Apply also searches again, in both accounts against the live ledger,
   for every created row whose destination, or any split posting, is one of
-  the user's own accounts (a split posting with its own amount), and queues it
+  the user's own accounts (split postings summed per account and currency), and queues it
   if a search finds a candidate. This screen ignores claims: an
   entry already claimed in that account still queues the row, though it never
   becomes the row's match. The second

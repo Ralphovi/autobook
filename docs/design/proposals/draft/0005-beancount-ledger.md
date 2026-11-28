@@ -719,9 +719,10 @@ check, changes nothing, staging included.
    claimed for the searched account (a transfer whose other side booked it)
    still counts as a candidate here, because it may be this very transfer; it
    only queues the row and never becomes the row's match. The same holds for **every split posting** to another of the
-   user's own accounts (a transfer with a fee, for example): that posting is
-   searched for with its own amount and currency in its account, and a
-   candidate queues the whole row. **Batch-level:** every
+   user's own accounts (a transfer with a fee, for example): the row's split
+   postings are **summed per account and currency** first (+60 and +40 to B
+   are one +100 movement), that net movement is searched for in its account,
+   and a candidate queues the whole row. **Batch-level:** every
    created row's **net movement in each other account of the user's** — its
    destination or its split postings, summed per account and currency, so
    +60 and +40 to B count as +100 — is compared with the source posting of
