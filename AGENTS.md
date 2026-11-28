@@ -199,7 +199,9 @@ one does not produce an error — it produces a wrong ledger.
   write. No byte of the owned file before the appended entries changed, and no
   other file changed — the owned file's hash is exactly the rendered content's,
   so an edit inside the appended entries is caught; such a save is kept as a
-  conflict (exit 4), never exchanged away. The balance of every account the batch wrote postings to
+  conflict (exit 4), never exchanged away. If only another file changed and
+  the owned file still holds the rendered content, the batch is rolled back
+  (exit 6). The balance of every account the batch wrote postings to
   moved by exactly the sum of those postings, and no other balance moved; a
   matched row writes none and moves nothing. Where the statement states a closing balance, the ledger's balance
   on that date equals it minus the statement's lines not yet applied. A line
@@ -290,7 +292,9 @@ one does not produce an error — it produces a wrong ledger.
   the canonical side (first in the configuration) is classified; the other is
   queued as "pending transfer". `transfers_pending` is recorded at proposal,
   and apply queues the second of two created rows that are one transfer's two
-  sides. The second
+  sides. Apply also searches again, in both accounts against the live ledger,
+  for every created row whose destination is one of the user's own accounts,
+  and queues it if either search finds a candidate. The second
   side of a transfer whose first side was booked in an earlier batch resolves
   to the entry the first side created. An unmatched second side whose
   counterpart is in `transfers_pending`, with the same amount and currency, is queued as "pending transfer", never

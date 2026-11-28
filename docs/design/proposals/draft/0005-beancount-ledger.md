@@ -659,7 +659,13 @@ check, changes nothing, staging included.
    against the ledger as loaded in step 1: exactly one candidate must remain,
    and it must be the row's `matched_entry`; the account must have no orphaned
    claim. For a row rebound by the user (§8.2), the recorded entry must pass
-   the match predicate and be unclaimed by another row. **Batch-level:** if
+   the match predicate and be unclaimed by another row. **A created row
+   whose destination is another of the user's own accounts** (a transfer,
+   also one the user made so by editing the account) is searched again too,
+   in its source account and in its destination account, against the ledger
+   as loaded in step 1: if either search finds a candidate, the transfer may
+   already be booked, and the row is queued ("needs a match decision"), never
+   created. **Batch-level:** if
    two created rows in the batch are the two sides of one transfer (each posts
    to the other's source account, opposite amounts, same currency, within the
    window), only the canonical side stays and the other is queued as "pending
@@ -696,10 +702,16 @@ check, changes nothing, staging included.
    - The owned file's SHA-256 is exactly the rendered content's, and no other
      file changed. Checking only the bytes before the appended entries would
      miss an edit inside them (a changed narration keeps IDs, amounts and
-     balances). A mismatch is a save that got in after the exchange: it is
-     not exchanged away. Autobook keeps that version at the owned path and
-     the previous content as the pre-image, marks nothing applied and exits
-     with code 4 for the user to resolve, as for any conflict (§10.6).
+     balances). The two cases are handled differently:
+     - **The owned file differs** from the rendered content: a save got in
+       after the exchange. It is not exchanged away. Autobook keeps that
+       version at the owned path and the previous content as the pre-image,
+       marks nothing applied and exits with code 4 for the user to resolve,
+       as for any conflict (§10.6).
+     - **Only another file changed**, and the owned file still holds exactly
+       the rendered content: the batch cannot be validated, so it is rolled
+       back by the checked exchange back of step 8 (exit 6). The other file's
+       edit is untouched, since the restore changes only the owned file.
    - Every kept pre-image, this batch's included, still has its recorded hash.
      This is the last check before the rows are marked applied; a mismatch is
      a save that got into an old file and rolls the batch back.
