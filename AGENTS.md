@@ -255,7 +255,19 @@ one does not produce an error — it produces a wrong ledger.
   paused for that whole source account: every line that would match there is
   queued until the user resolves the orphan. Autobook cannot tell which entry
   the edited one is, so blocking only the old amount and date is not enough. Dropping the claim would
-  let two payments become one entry.
+  let two payments become one entry. The user resolves it in the review file:
+  `m` on exactly one listed candidate (an entry that passes the full match
+  predicate, identified by its content-hash prefix) rebinds the row after
+  `decide` re-runs the predicate under the lock; `x` on the row releases the
+  claim and rejects it. Never rebind to an entry the search would not match. A
+  rebound row (`match_source = rebound`) must pass the predicate, unclaimed,
+  at apply and in the read-back, rather than be the only candidate.
+- **A created row never posts back to its source account.** Its destination,
+  and every split posting except the source posting, is another account; the
+  parser rejects such an edit (exit 5), a classifier proposing it is queued,
+  apply step 3 queues the row, and the read-back requires exactly one posting
+  in the source account. Otherwise `-x + x = 0` hides the bank movement from
+  every balance check.
 - **A matched hand-written entry is identified by its content hash**, excluding
   metadata and file position. Never by file and line: both move whenever anything above the
   entry is edited.
@@ -288,6 +300,13 @@ one does not produce an error — it produces a wrong ledger.
   ledger as it now stands, or restores the previous content — also when
   another ledger file changed in the meantime. If the owned file matches
   neither recorded hash it touches nothing and reports.
+- **The exchange keeps the ledger private.** The exchange puts the scratch
+  file's inode at the owned path, so create it with `O_CREAT | O_EXCL |
+  O_NOFOLLOW`, mode `0600`, then `fchmod` it to the owned file's mode, and
+  check mode and owner with `fstat` before the exchange; the umask must never
+  decide who reads the ledger. Refuse (exit 4) an owned file not owned by the
+  running user or carrying an ACL or extended attributes. The journal (it holds
+  the previous content) and staging are `0600` in a `0700` directory.
 - **Writes are durable in order.** `fsync` the journal and its directory
   before the exchange; `fsync` the temporary file before the exchange and the
   owned file's directory after it; `fsync` after removing the journal. An

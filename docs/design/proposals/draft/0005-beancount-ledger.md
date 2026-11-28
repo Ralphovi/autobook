@@ -462,9 +462,44 @@ an *orphaned claim*. Autobook cannot tell which entry the edited one is, so
 while an orphaned claim exists, **matching is paused for that whole source
 account**: every line that would go through `match_existing` there is queued
 with the reason "a matched entry changed". `autobook status`
-lists orphaned claims, and the orphaned row returns to the review file as `?`,
-where the user points it at its entry again. Otherwise the edited entry would
-be a later line's only candidate and two payments would become one entry.
+lists orphaned claims. Otherwise the edited entry would be a later line's only
+candidate and two payments would become one entry.
+
+**Rebinding an orphaned row.** The orphaned row returns to the review file as
+`?`, with its account shown as `(orphaned match)`. Under it, one line per
+entry that passes the row's match predicate (source account, amount,
+currency, date window, not claimed for that account by another row); each line
+shows the entry's date, amount, other account and narration, and its ID is the
+row's ID, `.m` and the first 12 hex digits of the entry's content hash
+(`9de441.m3fa9c2e1b7d0`), so it is parsed by ID, never by position:
+
+```
+9de441          ?   2026-07-16   -18,50 EUR   (orphaned match)       PAYPAL .VENDORX
+9de441.m3fa9c2e1b7d0  -   2026-07-16   -18,50 EUR   Ausgaben:Freizeit   PayPal Vendor X
+```
+
+The user resolves the orphan in one of two ways; nothing else is accepted for
+an orphaned row, and the strict parser aborts on anything else (exit 5):
+
+- **`m` on exactly one candidate line** rebinds the row. `decide`, under the
+  writer lock, runs the predicate again on the loaded ledger: the chosen entry
+  must still pass it, and its hash prefix must name exactly one candidate.
+  Otherwise the parse aborts (exit 5) and nothing is recorded. On success
+  `matched_entry` becomes that entry's content hash, the old hash is kept in
+  `human_correction`, `match_source` becomes `rebound` and the row is
+  `approved`. A candidate line marked `m` under a row that is not orphaned
+  aborts the parse.
+- **`x` on the row** releases the claim and rejects the row: the line is not
+  booked by Autobook, and the user books it by hand if it is real.
+
+Leaving the row at `?` keeps the orphan, and matching in that account stays
+paused. An edit that changed the entry's amount, currency or date beyond the
+window leaves no candidate, so only `x` remains; Autobook never rebinds to an
+entry that its own search would not match. For a rebound row, apply (§10.3
+step 3) and the read-back require the recorded entry to pass the predicate and
+be unclaimed by another row, rather than to be the only candidate, because
+the user chose between candidates. Matching in the account resumes once no
+orphaned claim is left in it.
 
 ### 9. Trial and production
 
@@ -579,9 +614,14 @@ check, changes nothing, staging included.
    row approved for the first time has only a `matched_entry`, and goes on.
 3. **Check each row.** Both accounts open on its date; its currency declared
    on the source account and allowed on the other; postings in whole cents
-   summing to exactly zero. For a matched row, the **search is run again**
+   summing to exactly zero. **No posting of a created row is to the source
+   account except the source posting**: a destination equal to the source
+   account, or a split posting other than `.0` in it, would net the account
+   to zero and hide the bank movement. For a matched row, the **search is run again**
    against the ledger as loaded in step 1: exactly one candidate must remain,
-   and it must be the row's `matched_entry`; the account must have no orphaned claim.
+   and it must be the row's `matched_entry`; the account must have no orphaned
+   claim. For a row rebound by the user (§8.2), the recorded entry must pass
+   the match predicate and be unclaimed by another row.
    A row that fails is queued.
    **A batch with no created rows** (only matched rows) writes nothing: steps
    4 and 5 are skipped, no journal or pre-image is made, and the ledger is
@@ -602,10 +642,12 @@ check, changes nothing, staging included.
    until step 7 has passed and staging is updated.
 6. **Read back.** Load the ledger again.
    - Every **created** row's proposal ID appears exactly once, with the
-     approved date, accounts and amounts.
+     approved date, accounts and amounts, and with exactly one posting in its
+     source account: the source posting, carrying the statement amount.
    - A **matched** row wrote nothing, so its ID is not looked for. Its
      search, run again on the reloaded ledger, must still find exactly one
-     candidate, and it must be the row's `matched_entry`.
+     candidate, and it must be the row's `matched_entry` (for a rebound row:
+     the recorded entry still passes the predicate, unclaimed by another row).
 7. **Assert.**
    - The load reports no error that step 1 did not report.
    - No byte of the owned file before the appended entries changed, and no
@@ -659,6 +701,19 @@ write the rendered content to a scratch file (`.autobook-tmp-<ULID>`) and
 `fsync` it; rename it to its final pre-image name, which the journal records,
 and `fsync` the owned file's directory — so the final name only ever holds the
 complete rendered content; exchange; `fsync` the owned file's directory again.
+
+**File modes.** The exchange puts the scratch file's inode at the owned path,
+so its metadata becomes the ledger's. The scratch file is created with
+`O_CREAT | O_EXCL | O_NOFOLLOW` and mode `0600`, then `fchmod`ed to the owned
+file's current mode, so the process umask never decides who can read the
+ledger. Before the exchange the writer checks, with `fstat` on both open
+files, that the scratch file has the owned file's mode and owner; the owned
+file must belong to the running user. An owned file with a POSIX ACL or other
+extended attributes is refused (exit 4) rather than silently stripped of them.
+The journal, which holds the previous content, and the staging store are
+created `0600` in a directory of mode `0700`. A pre-image keeps the mode of
+the inode it is, the owned file's old one. `autobook init` creates the owned
+file `0600`.
 A scratch file left by a crash holds only content Autobook rendered and never
 reached the ledger, so recovery removes it. The journal's removal is likewise followed by an `fsync` of its
 directory, after staging has committed.
@@ -808,6 +863,7 @@ proposals(
   rule_id,
   matched_entry,                               -- match_existing: the candidate found at proposal, its
                                                -- autobook-id if it has one, else its content hash
+  match_source,                                -- search | rebound (the user chose it, §8.2)
   status,                                      -- pending|approved|skipped|rejected|applied
                                                -- skipped: `s` in the review file; releases the
                                                -- row's claim, and the row returns as `?` next time
@@ -869,7 +925,8 @@ A posting line with no parent row, or a parent row missing a posting, aborts
 the parse.
 
 Status: `a` accept, `?` needs a decision, `s` skip, `x` reject (recorded as a
-negative example). Change an account by typing over it. Rows that passed the
+negative example), and `m` on a candidate line under an orphaned row, which
+rebinds it (§8.2). Change an account by typing over it. Rows that passed the
 gates are pre-marked `a`; everything else is `?`.
 
 - **Saving is approving** every row marked `a`, with the account, amount,
@@ -879,7 +936,12 @@ gates are pre-marked `a`; everything else is `?`.
   misalign anything. An unknown ID is an error.
 - **Strict parser.** An unknown status, an account that is not open in the
   ledger, or an amount or currency that differs from staging aborts the whole file with a
-  line number (exit 5) and applies nothing.
+  line number (exit 5) and applies nothing. So does a destination account, or
+  a split's destination posting, equal to the row's source account. A
+  classifier (a rule, kNN or the LLM) that proposes the source account as the
+  destination has its row queued, never pre-marked.
+- **An orphaned match** is resolved here, by `m` on one candidate line or `x`
+  on the row (§8.2).
 - The difference between what was proposed and what was saved is the training
   signal; both are recorded per row.
 
@@ -946,13 +1008,26 @@ does not guess.
 
 **Verification** is mechanical, and a difference rejects the conversion:
 
+- **every transaction is compared by GUID.** Each exported transaction is
+  found in the ledger by its GUID exactly once, and no converted transaction
+  lacks one. Its date, description (as narration) and retained metadata must
+  match, and its postings must match one to one: account (through the rename
+  table), exact value and exact amount, and retained posting metadata. Postings
+  are paired by split GUID, kept as posting metadata, not by position or value,
+  so two equal-valued postings swapped between accounts are caught. Aggregate
+  checks alone are not enough: a converter defect that changes a date or a
+  narration, or swaps equal postings, keeps every count and total. Any
+  difference the decision file causes (a renamed account, a dropped field, a
+  re-homed Imbalance posting) is listed per GUID in the decision file; an
+  unlisted difference rejects the conversion;
 - transaction and posting counts match, per year;
 - every account's balance per commodity matches exactly at each year end and
   at the conversion date; these are written into the new ledger as `balance`
   directives;
 - `bean-check` reports no error;
 - the rename table is one-to-one and every exception is listed;
-- each converted transaction carries its GnuCash GUID as metadata.
+- each converted transaction carries its GnuCash GUID as metadata, and each
+  posting its split GUID.
 
 For scale, the author's book: about 1,400 transactions, nearly all from one
 year; about 160 accounts, a third needing a rename, with no collisions under
@@ -1068,7 +1143,8 @@ full. The classification, privacy and review-file rules there are unchanged.
 - **`match_existing` searches the source account** and never guesses between
   candidates. The search is run at proposal, again at apply and again in the
   read-back; exactly one candidate must remain each time. An orphaned claim
-  pauses matching for its whole source account. Claims are per source account, so the second side of a transfer
+  pauses matching for its whole source account until the user rebinds the row
+  to an entry the predicate still matches, or rejects it. Claims are per source account, so the second side of a transfer
   can match the entry the first side created.
 - **One Autobook writer at a time.** `propose`, `apply`, `undo` and `decide` hold the writer lock
   from before they parse the review file or read the ledger until staging is
@@ -1084,6 +1160,11 @@ full. The classification, privacy and review-file rules there are unchanged.
   reported, never re-created silently.
 - **Undo is narrow.** It removes an entry only if its ID belongs to a created
   row of that batch and the entry is in the owned file; both are asserted.
+- **A created row never posts back to its source account.** Its destination,
+  and every split posting but the source posting, is another account.
+- **The exchange keeps the ledger's mode.** The scratch file is created `0600`
+  and given the owned file's mode before the exchange, checked with `fstat`;
+  the journal and staging are `0600` in a `0700` directory.
 - **A refusal writes nothing.**
 
 ## Relation to the other proposals
@@ -1139,7 +1220,10 @@ like any other group and mostly become creditor-ID rules.
    changed. A reader emits `coa` and `corpus` for a synthetic ledger, with
    `beancount` imported only inside the ledger package. The spikes are tests.
 2. **B1.** On the author's book, the verification in §14 reports no
-   difference, and every exception is in the decision file.
+   difference, and every exception is in the decision file. By test, on a
+   synthetic export: a changed date, a changed narration, and two
+   equal-valued postings swapped between accounts each reject the conversion
+   although every count and total still matches.
 3. **Step 2.** The backtest reports per method and per band, on the novel
    stratum, with token-Bayes as the control (the premise test, and proposal
    0004's R1).
@@ -1163,6 +1247,14 @@ like any other group and mostly become creditor-ID rules.
      the row is queued, not marked applied;
    - a matched hand-written entry is edited: every later line that would
      match in that account is queued until the orphan is resolved;
+   - an orphaned row rebound with `m` to a candidate is matched to that entry
+     and matching in the account resumes; `m` on an entry that no longer
+     passes the predicate aborts the parse and records nothing;
+   - a row whose destination, or a split posting other than the source
+     posting, is the source account is refused by the parser and queued at
+     apply;
+   - with a umask of `022` and an owned file of mode `0600`, the owned file
+     is still `0600` after a batch; an owned file with an ACL is refused;
    - a second candidate appears between proposal and apply: the row is queued;
    - a change to any ledger file between read and replace stops the write;
    - a save to the owned file between the last re-hash and the exchange is

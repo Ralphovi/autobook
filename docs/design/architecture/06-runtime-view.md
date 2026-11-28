@@ -212,9 +212,11 @@ whole or not at all.
    `matched_entry` and goes on to step 3.
 3. **Check each row.** Both accounts are open on its date; its currency is
    declared on the source account and allowed on the other; its postings are in
-   whole cents and sum to exactly zero. For a matched row, the search is run
+   whole cents and sum to exactly zero; no posting but the source posting is in
+   the source account. For a matched row, the search is run
    again: exactly one candidate must remain, the row's `matched_entry`, in an account
-   with no orphaned claim. A row that fails is queued, and the batch goes on without it.
+   with no orphaned claim. A row the user rebound (proposal 0005 §8.2) must
+   instead have its recorded entry pass the predicate, unclaimed by another row. A row that fails is queued, and the batch goes on without it.
    **A batch with no created rows** (only matched rows) writes nothing: steps
    4 and 5 are skipped, no journal or pre-image is made, and the ledger is
    loaded again and steps 6 and 7 run against that fresh load, immediately
