@@ -715,8 +715,9 @@ check, changes nothing, staging included.
    user's own accounts (a transfer with a fee, for example): that posting is
    searched for with its own amount and currency in its account, and a
    candidate queues the whole row. **Batch-level:** every
-   posting of a created row to another of the user's own accounts — its
-   destination or a split posting — is compared with the source posting of
+   created row's **net movement in each other account of the user's** — its
+   destination or its split postings, summed per account and currency, so
+   +60 and +40 to B count as +100 — is compared with the source posting of
    every other created row in the batch. If they are the two sides of one
    transfer — the posting is in the other row's source account with the
    **same signed amount** as that row's source posting (A's entry posts
@@ -1079,6 +1080,14 @@ cases: Autobook may refuse, but it never discards a saved version.
 
 Editing the owned file while `apply` or `undo` runs is therefore not supported
 but is safe: the worst outcome is a refusal and a conflict to resolve by hand.
+
+**The owned path must be a regular file, not a symbolic link.** The reader
+would follow a link and hash its target, while the exchange swaps the link
+itself, so the file compared would not be the file exchanged. `init` and the
+preflight of every write refuse (exit 4) an owned path that is a symlink or
+not a regular file (checked with `lstat`), and it is checked again with the
+re-hash immediately before the exchange; the exchange is made relative to a
+directory descriptor opened on the owned file's real directory.
 
 The writer requires a file system that supports the exchange. Where it is not
 available, `apply` refuses with exit code 4 instead of falling back to a plain

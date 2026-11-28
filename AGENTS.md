@@ -298,7 +298,10 @@ one does not produce an error — it produces a wrong ledger.
   the canonical side (first in the configuration) is classified; the other is
   queued as "pending transfer". `transfers_pending` is recorded at proposal,
   and apply queues the second of two created rows that are one transfer's two
-  sides — compared posting by posting, so a split with a fee leg is caught.
+  sides — compared by net movement per account and currency, so a split with
+  a fee leg, or two legs to the same account, is caught. The owned path must be
+  a regular file, never a symlink (checked with `lstat` at preflight and again
+  before the exchange).
   The side kept is the one whose entry the other side's exact-amount match
   would find (the fee-bearing split, not the plain 100); configuration order
   decides only when both qualify, and neither qualifying queues both. The
