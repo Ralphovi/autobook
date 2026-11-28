@@ -1,30 +1,29 @@
 %% C4 Level 1 — System context
 %% Diagrams as code. Render with any Mermaid renderer.
 graph TB
-    user["User<br/>(books in GnuCash, reviews in $EDITOR)"]
+    user["User<br/>(keeps a Beancount ledger, reviews in an editor)"]
+    driver["Driver<br/>(separate project: gets statements, runs ofxstatement,<br/>decides when to run, opens the editor, notifies)"]
 
     subgraph autobook["Autobook"]
-        sys["Pipeline + Book process (exporter, applier) + Launcher"]
+        sys["One process: input + pipeline + staging + ledger package"]
     end
 
-    paperless["paperless-ngx<br/>statements and bills"]
-    files["Statement files<br/>(first-class, with or without paperless)"]
-    plugins["ofxstatement plugins<br/>(per bank)"]
-    book["GnuCash book<br/>(XML / SQLite / MySQL / PostgreSQL)"]
-    gui["GnuCash desktop"]
+    ledger["Beancount ledger files<br/>(main file and its includes, all read;<br/>one owned file, the only one written)"]
+    viewer["Fava or a text editor"]
+    paperless["paperless-ngx<br/>bills"]
     model["Model backend<br/>(optional, OpenAI-compatible,<br/>local by default)"]
     secrets["Secret Service<br/>(libsecret)"]
-    notify["Notifier<br/>(e.g. ntfy)"]
     packs["Rule-pack repository<br/>(separate, versioned)"]
 
-    user -->|"runs launcher, approves by saving the review file"| sys
+    user -->|"starts or schedules"| driver
+    driver -->|"shows the review file, notifies"| user
+    user -->|"approves by saving the review file"| driver
+    driver -->|"OFX files, optional producer string,<br/>the saved review file"| sys
+    sys -->|"exit code, --json output, review file"| driver
+    sys -->|"reads every file; writes transactions<br/>to the owned file only"| ledger
+    user -->|"reads and edits the ledger"| viewer
+    viewer -->|"opens"| ledger
     sys -->|"REST, read; optional stamp"| paperless
-    sys -->|"reads"| files
-    sys -->|"in-process parse"| plugins
-    sys -->|"libgnucash engine API<br/>(read-only export; writes)"| book
-    sys -->|"exec after run"| gui
-    gui -->|"opens"| book
     sys -->|"token, account indices, amount, sign<br/>(remote: allowlisted tokens only)"| model
     sys -->|"tokens, API keys"| secrets
-    sys -->|"failures, refusals"| notify
     packs -->|"pattern → category data"| sys
