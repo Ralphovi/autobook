@@ -196,8 +196,9 @@ cannot take the lock, or refuses in recovery or the pre-image check, changes
 nothing, staging included. A batch is booked
 whole or not at all.
 
-0. **Lock.** Take the writer lock, an advisory lock on a file beside the staging
-   store. It is held until staging is updated at the end. If another Autobook
+0. **Lock.** Take the writer lock, an advisory lock on a file in the staging
+   store's one state directory (its path is recorded in the store itself, so
+   every configuration of the store uses the same lock). It is held until staging is updated at the end. If another Autobook
    run holds it: exit 4, nothing written.
 1. **Read.** Load the ledger: its errors, the accounts, the existing Autobook
    IDs, and the SHA-256 of every loaded file. The owned file must be among

@@ -225,7 +225,7 @@ starts an editor or another program.
 | 1 | Nothing to do | nothing |
 | 2 | Usage or configuration error | nothing |
 | 3 | The batch gate or the version gate refused (§9.2, §9.3) | nothing |
-| 4 | The ledger is not writable as expected: the owned file is not included, its root-name options differ from the main file's, a ledger file changed during the run, another Autobook run holds the writer lock — or a **conflict**: the owned file was saved, or its permissions changed, during the write | nothing, in a refusal. In a conflict, Autobook's batch is not in effect, the user's saved version is at the owned path, every displaced version is kept as a file beside the journal, and `autobook status` names them; the driver reports a conflict for the user to resolve, not a clean refusal |
+| 4 | The ledger is not writable as expected: the owned file is not included, its root-name options differ from the main file's, a ledger file changed during the run, another Autobook run holds the writer lock — or a **conflict**: the owned file was saved, or its permissions changed, during the write | nothing, in a refusal. In a conflict, staging records nothing as applied, but the entries may still be in the ledger (a save that kept them, such as an edited narration, stays at the owned path): the user's saved version is at the owned path, every displaced version is kept as a file beside the journal, and `autobook status` names them; the driver reports a conflict for the user to resolve, not a clean refusal, and must not retry until `autobook status` shows it resolved |
 | 5 | The review file did not parse; the line number is on standard error | nothing |
 | 6 | The read-back or an assertion failed; no row of the batch was committed | nothing of Autobook's remains: the owned file holds its previous content again. A change to another included file that caused the failure is someone else's edit and is left as it is. If the batch was exchanged in, the previous file was restored and the rejected batch is kept as a pre-image beside the owned file and recorded in staging; a matched-only batch wrote nothing, so there is nothing to restore and no pre-image |
 | 7 | A statement was rejected at admission; the reason is reported per file | nothing staged from that statement |
@@ -660,7 +660,9 @@ recorded) a file whose header is missing or names no recorded review, whose
 review's tuple is no longer the validated one, or that lists a row whose
 revision has changed since the review was written. An older review of a
 re-proposed row can therefore never pass as an account edit.
-**The batch is exactly the rows marked `a` in this file.** A row that an
+**The batch is exactly the rows marked `a` in this file**, plus orphaned rows
+rebound in it with `m` (§8.2): an `m` on a candidate is that row's approval
+of the match, so `apply --from FILE` validates a rebind from the same file. A row that an
 earlier `decide` left `approved` but that this file omits or no longer marks
 `a` is not booked, and returns to `pending`; a stored approval is never a
 substitute for the file being applied. It holds the lock until staging is
@@ -673,9 +675,11 @@ check, changes nothing, staging included.
    SHA-256 of every file. The hashes must describe the bytes Beancount
    parsed, so the load is taken from a **snapshot**: every ledger file is read
    once into memory, hashed, and written into a private directory (mode
-   `0700`) under the same paths relative to the **deepest common ancestor of
-   every resolved file** (so `../shared/accounts.bean` stays inside the
-   copy), and Beancount loads that copy, never
+   `0700`) that **mirrors each file's absolute path** (`/books/ledger/main.bean`
+   becomes `<snapshot>/books/ledger/main.bean`), so every relative include,
+   `../` included, resolves inside the copy exactly as it does live; an
+   include that would resolve outside the mirrored files is refused (exit 4)
+   before Beancount runs, and Beancount loads that copy, never
    the live files. The live files and the include set are then compared with
    the snapshot; if any differs, a save got in, and the snapshot is taken
    again (up to three times, then exit 4). A save that is undone during the
@@ -730,8 +734,10 @@ check, changes nothing, staging included.
    +60 and +40 to B count as +100 — is compared with the source posting of
    every other created row in the batch. **Pairing does not depend on the
    amounts agreeing:** two rows in two of the user's accounts, same currency,
-   within the window, each with a posting to the other's source account, are
-   treated as the two sides of one transfer whatever their amounts (−105 in A
+   within the window, each with a posting to the other's source account,
+   **with opposite-signed statement amounts** (one leaves an account, the other
+   arrives in the other: two independent payments A→B and B→A are both debits
+   and are not paired), are treated as the two sides of one transfer whatever their amounts (−105 in A
    and +98 in B, each with its own bank's fee, are a pair). An exact pair is
    one where — the posting is in the other row's source account with the
    **same signed amount** as that row's source posting (A's entry posts
@@ -1144,9 +1150,13 @@ rename.
 SQLite under `$XDG_DATA_HOME` by default; a PostgreSQL URI as an option. The
 writer lock and the batch journal live in a local directory **keyed by the
 staging store's identity**, not by the configuration: a UUID that `init`
-writes into the store, giving `$XDG_STATE_HOME/autobook/<store-UUID>/`. Two
-configurations that point at the same store therefore take the same lock and
-see the same journal. They are files, not rows, so they bind only the clients
+writes into the store, together with the **absolute path of the one state
+directory** for that store (`init` creates it under its own
+`$XDG_STATE_HOME/autobook/<store-UUID>/`, mode `0700`). Every client reads
+that path from the store, never from its own environment, so a scheduled run
+and an interactive run with different state homes take the same lock and see
+the same journal; a client that cannot use the directory, or does not own it,
+is refused (exit 2). They are files, not rows, so they bind only the clients
 of one machine. A PostgreSQL store is therefore supported for **one machine only**:
 Autobook records the host that created the store and refuses (exit 2) a run
 from another host. Sharing one ledger and one store between machines would

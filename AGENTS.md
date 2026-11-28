@@ -189,9 +189,9 @@ one does not produce an error — it produces a wrong ledger.
   unavailable: refuse. Beancount has no lock; against editors and
   Fava this is the guard.
 - **One Autobook writer at a time.** `propose`, `apply`, `undo` and `decide` take
-  Autobook's own writer lock (an advisory lock on a file in the directory
-  keyed by the staging store's UUID, so two configurations of one store share
-  it, never in the ledger's directory) before they parse the review file or
+  Autobook's own writer lock (an advisory lock on a file in the staging
+  store's one state directory, whose absolute path is recorded in the store, so
+  every client of the store shares it whatever its own environment, never in the ledger's directory) before they parse the review file or
   record any decision, and before the first read of the ledger, and hold it until staging is
   updated. Without it, two runs can both pass the compare and the second
   overwrites the first. A run that cannot take the lock writes nothing.
