@@ -265,7 +265,9 @@ reason recorded and no line staged, if:
   declares;
 - the lines do not add up to the statement's balances, where it states them;
 - its period overlaps an admitted statement in a way the overlap rule cannot
-  resolve (proposal 0002 §3.4).
+  resolve (proposal 0002 §3.4);
+- a line repeats a known bank ID with a different date, amount or currency
+  (see *Dedup*).
 
 Every decision is recorded in `statements` with the file's checksum. Handing
 over a file that was already **admitted** changes nothing. A file that was
@@ -274,7 +276,12 @@ reason outside the file (an account ID missing from the configuration, an
 account not yet opened in the ledger) is admitted once that is fixed.
 
 **Dedup.** A line is identified within its source account by the bank's ID
-when the configuration says the IDs are bank-supplied. Otherwise the ID is
+when the configuration says the IDs are bank-supplied. A later statement that
+repeats a bank ID reuses its proposal only if the date, amount and currency
+agree; a different memo is recorded but is not a conflict. If any of the three
+differs, the bank changed a fact, and the whole statement is rejected
+("conflicting line for a known bank ID") for the user to resolve; a
+correction is never silently dropped. Otherwise the ID is
 synthesised by the converter (a hash of date, memo and amount, so two
 identical card payments on one day collide) and is not trusted as an identity:
 the line takes the key `(statement checksum, ordinal)` and the overlap rule
@@ -665,7 +672,10 @@ check, changes nothing, staging included.
    in its source account and in its destination account, against the ledger
    as loaded in step 1: if either search finds a candidate, the transfer may
    already be booked, and the row is queued ("needs a match decision"), never
-   created. **Batch-level:** if
+   created. The same holds for **every split posting** to another of the
+   user's own accounts (a transfer with a fee, for example): that posting is
+   searched for with its own amount and currency in its account, and a
+   candidate queues the whole row. **Batch-level:** if
    two created rows in the batch are the two sides of one transfer (each posts
    to the other's source account, opposite amounts, same currency, within the
    window), only the canonical side stays and the other is queued as "pending
@@ -820,7 +830,7 @@ writer lock — `propose` too, so that it never classifies against a batch that
 was written but not yet validated. `propose` does not recover a journal
 itself: it refuses with exit code 4 until `apply` or `undo` has. So does a
 `decide` that would record a decision, before it parses the review file: the
-journal's batch is re-checked against `approved_splits` and `matched_entry` in
+journal's batch is re-checked against `approved_account`, `approved_splits` and `matched_entry` in
 staging, and a decision recorded in between would change what that batch is
 checked against. `apply` and `undo` recover as follows:
 
@@ -1008,6 +1018,8 @@ proposals(
   raw_memo, normalised_memo,
   disposition, queue_reason,
   proposed_account, confidence, method,        -- rule | knn | llm
+  approved_account,                            -- create only: the destination as saved by `decide`
+                                               -- (possibly edited); what apply books and recovery re-checks
   proposed_splits,                             -- create_split only: every posting, account and cents
   approved_splits,                             -- create_split only: the postings as saved by `decide`
                                                -- (accounts possibly edited); what apply books
@@ -1094,7 +1106,9 @@ rebinds it (§8.2). Change an account by typing over it. Rows that passed the
 gates are pre-marked `a`; everything else is `?`.
 
 - **Saving is approving** every row marked `a`, with the account, amount,
-  currency and date shown. Every row shows its currency: an account may hold
+  currency and date shown. `decide` stores the saved destination in
+  `approved_account` (a split's postings in `approved_splits`); apply books
+  that, never `proposed_account`. Every row shows its currency: an account may hold
   several, and a bare number would hide which one is being approved.
 - **Parse by ID, never by position.** Reordering or deleting rows must not
   misalign anything. An unknown ID is an error.

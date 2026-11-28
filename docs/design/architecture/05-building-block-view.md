@@ -703,6 +703,7 @@ proposals(source_account, line_key,       -- PK (source_account, line_key)
           raw_memo, normalised_memo,
           disposition, queue_reason,
           proposed_account, confidence, method, rule_id,  -- method: rule | knn | llm
+          approved_account,               -- create only: the destination as saved; what apply books
           proposed_splits,                -- create_split only: every posting, account and cents
           approved_splits,                -- create_split only: the postings as saved; what apply books
           matched_entry,                  -- match_existing: the candidate found at proposal
