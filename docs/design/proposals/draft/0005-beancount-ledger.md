@@ -209,6 +209,7 @@ starts an editor or another program.
 | `autobook decide --from FILE` | Parse a saved review file and record its decisions to staging; `--check` parses only | read (account list) |
 | `autobook apply --from FILE` | `decide`, then book the approved rows: write, read back, assert | **write** |
 | `autobook undo BATCH` | Remove what a batch created; asks for confirmation unless `--yes` | **write** |
+| `autobook resolve BATCH --keep-current` | Clear an interrupted batch's journal while keeping the user's version of the owned file; check each row against the ledger as it stands (§10.4); `--dry-run` lists only | writes staging and the journal directory, never the ledger |
 | `autobook forget PATH` | Remove the staging record of a pre-image the user has deleted; refuses while the file exists | writes staging (under the writer lock) |
 | `autobook status` | Last run, pending counts, the version tuple in force, entries that differ from staging, kept pre-images whose content changed. | read |
 | `autobook export` | Print the reader's contracts (`coa`, `corpus`, `existing`), for inspection and for the trial | read |
@@ -924,8 +925,10 @@ check, changes nothing, staging included.
      of that source account** up to the closing date, from this statement and
      from every earlier admitted one: a January line still pending is in
      February's closing balance but not in the ledger. They are read from
-     `statement_lines`, so a line an overlapping statement staged is counted
-     once.
+     `statement_lines` and **deduplicated on `(source_account, line_key)`**
+     before summing, so a line two overlapping statements share is counted
+     once — never deduplicated by date, amount and memo, which would collapse
+     two legitimate identical payments.
    - Every kept pre-image, this batch's included, still has its recorded hash.
      Checked **last**, after every other assertion and immediately before
      the staging commit, so a displaced save during the other checks is
@@ -1033,9 +1036,12 @@ checked against. `apply` and `undo` recover as follows:
   undo of the same batch is never mistaken for this one. A crash
   after that commit and before the journal is removed leaves a journal for a
   finished operation. Recovery checks staging first: if the operation is
-  committed, it only finishes the cleanup — records the pre-image if that was
-  not yet done, removes the journal and `fsync`s its directory — and never
-  validates or rolls back again. The cases below apply only to a batch staging
+  committed, it only finishes the cleanup — removes the journal and `fsync`s
+  its directory — and never validates or rolls back again. The pre-image is
+  recorded (`preimages`, with the hash the swap check saw) **in that same
+  commit transaction**, never after it, so a save through an editor's handle
+  to the displaced file after the commit is caught by the next pre-image
+  check rather than recorded as the baseline. The cases below apply only to a batch staging
   does not record as committed.
 
 - The owned file has the journal's *before* hash: either the exchange never
@@ -1085,6 +1091,19 @@ checked against. `apply` and `undo` recover as follows:
 - It has neither: someone changed the file since. Autobook touches nothing,
   marks nothing applied and exits with code 4; `autobook status` shows the
   interrupted batch for the user to resolve.
+
+**Resolving a conflict by hand.** `autobook resolve BATCH --keep-current`,
+attended and under the writer lock, is the one way to clear a journal while
+keeping the user's version of the owned file. It records every version it
+holds as a pre-image (`kind = conflict`), leaves the owned file as it is, and
+treats nothing as validated because its proposal ID is present: each of the
+batch's rows is checked against the current ledger as the read-back would
+(its ID exactly once, the approved date, accounts, amounts and currencies;
+for a matched row, the predicate). A row that passes is marked `applied`,
+because the user, attending, has now accepted the ledger as it stands; a row
+that does not stays unapplied, with the difference listed, and its revision is
+incremented so no old review can book it. Then the journal is removed and its
+directory `fsync`ed. `--dry-run` lists what it would do.
 
 A row is therefore never `applied` without having passed the read-back and the
 assertions, also after a crash.

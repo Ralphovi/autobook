@@ -356,7 +356,9 @@ one does not produce an error — it produces a wrong ledger.
   it holds the content it must: the owned file's previous content when the
   exchange was kept, or the batch's rendered content when the exchange never
   happened or was undone. Anything else is a displaced save: keep the journal
-  and refuse. One exception: if the owned file has the *before* hash, no file
+  and refuse (the user clears it with the attended `autobook resolve BATCH
+  --keep-current`, which re-checks each row against the ledger as it stands
+  and never treats a present proposal ID as validation). One exception: if the owned file has the *before* hash, no file
   is at the pre-image path and the journal was never marked *published*, the
   crash came before the pre-image existed and there is nothing to record. A
   missing pre-image after *published* is a lost version: keep the journal and
