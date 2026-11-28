@@ -344,10 +344,15 @@ one does not produce an error — it produces a wrong ledger.
 - **Preflight before decisions.** `apply` takes the lock, recovers any
   journal and checks the kept pre-images before it parses the review file or
   records any decision, so a refusal leaves staging unchanged. A run that
-  finds a journal first
-  checks the swapped-out file: if it is not the previous content, a save got in
-  just before the exchange, so exchange back and mark nothing applied. Only
-  then does it validate that batch against the journal's baseline, never against the
+  finds a journal first checks staging: a committed operation is only cleaned
+  up. Otherwise it classifies the owned file by the journal's hashes. With the
+  *before* hash the exchange never happened or was undone, and the pre-image
+  path holds the rendered batch: record it (content and metadata checked),
+  never install it. Only with the *after* hash does it check the swapped-out
+  file: if it is missing, or not the previous content, or its metadata
+  differs, a save or a permission change got in just before the exchange, so
+  exchange back (or, if missing, keep the journal) and mark nothing applied.
+  Only then does it validate that batch against the journal's baseline, never against the
   ledger as it now stands, or restores the previous content — also when
   another ledger file changed in the meantime. If the owned file matches
   neither recorded hash it touches nothing and reports.

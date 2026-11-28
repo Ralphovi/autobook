@@ -743,7 +743,10 @@ check, changes nothing, staging included.
    **The same comparison runs against every staged row not in the batch**
    that is not yet applied (pending, approved or queued), in any of the
    user's accounts, so it does not depend on both sides being approved
-   together. If a created row's transfer posting has such a staged
+   together. **Either direction establishes the pair**: the created row's
+   posting matching the staged row's statement amount, or the staged row's
+   proposed or approved postings (a pending split's +100 to B) matching the
+   created row's statement amount. If a created row has such a staged
    counterpart and the row is not the side that represents both movements
    (B's plain +100 while A's −105 fee split is still pending), the row is
    queued as "pending transfer" until the counterpart is decided.
@@ -943,8 +946,10 @@ checked against. `apply` and `undo` recover as follows:
   durable if the crash came right after it. Before the
   journal is discarded, the file at the journal's pre-image path, if it
   exists, is checked: if it holds exactly the content the batch rendered (the
-  journal's *after* hash), it is recorded in staging (`kind = rejected`). If it
-  holds anything else, an editor saved into it: Autobook records nothing,
+  journal's *after* hash) **and** still has the mode, owner, group and ACL
+  state the writer gave it, it is recorded in staging (`kind = rejected`). If
+  it holds anything else, or its metadata changed, an editor saved into it or
+  the user changed its permissions: Autobook records nothing,
   keeps the journal and the file, and exits with code 4 for the user to
   resolve. It is never deleted. Then the batch is applied from the start.
 - It has the *after* hash: the batch was written and never validated. First
