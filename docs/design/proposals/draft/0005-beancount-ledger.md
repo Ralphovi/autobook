@@ -227,7 +227,7 @@ starts an editor or another program.
 | 3 | The batch gate or the version gate refused (§9.2, §9.3) | nothing |
 | 4 | The ledger is not writable as expected: the owned file is not included, its root-name options differ from the main file's, a ledger file changed during the run, or another Autobook run holds the writer lock | nothing |
 | 5 | The review file did not parse; the line number is on standard error | nothing |
-| 6 | The read-back or an assertion failed; the previous file was restored | no ledger file changes (every included file byte-identical); the rejected batch is kept as a pre-image beside the owned file and recorded in staging |
+| 6 | The read-back or an assertion failed; no row of the batch was committed | no ledger file changes (every included file byte-identical). If the batch was exchanged in, the previous file was restored and the rejected batch is kept as a pre-image beside the owned file and recorded in staging; a matched-only batch wrote nothing, so there is nothing to restore and no pre-image |
 | 7 | A statement was rejected at admission; the reason is reported per file | nothing staged from that statement |
 
 The numbering is fixed when the first command that returns 3–7 lands.
@@ -670,6 +670,10 @@ check, changes nothing, staging included.
 2. **Filter.** Drop rows whose proposal ID is already in the ledger, and
    matched rows that already have an `applied_entry` still present. A matched
    row approved for the first time has only a `matched_entry`, and goes on.
+   **A row staging already records as `applied` whose entry is missing from
+   the ledger** (the user deleted it) is excluded and reported, never booked
+   again: its staged status is read before the file's decisions are
+   recorded, and a saved review file does not turn it back into a create.
 3. **Check each row.** Both accounts open on its date; its currency declared
    on the source account and allowed on the other; postings in whole cents
    summing to exactly zero. **No posting of a created row is to the source
@@ -679,7 +683,11 @@ check, changes nothing, staging included.
    against the ledger as loaded in step 1: exactly one candidate must remain,
    and it must be the row's `matched_entry`; the account must have no orphaned
    claim. For a row rebound by the user (§8.2), the recorded entry must pass
-   the match predicate and be unclaimed by another row. **A created row
+   the match predicate and be unclaimed by another row. **Every created row**
+   is searched again in its source account, against the ledger as loaded in
+   step 1, with the full match predicate: an entry the user booked by hand
+   after the proposal is a candidate, and the row is queued ("needs a match
+   decision") rather than duplicating it. **A created row
    whose destination is another of the user's own accounts** (a transfer,
    also one the user made so by editing the account) is searched again too,
    in its source account and in its destination account, against the ledger
@@ -979,8 +987,12 @@ content rendered from the older snapshot, and the read-back could not tell.
 So the owned file is not renamed over; it is **exchanged** with the temporary
 file in one atomic step (`renameat2` with `RENAME_EXCHANGE`, Linux). After the
 exchange the temporary path holds exactly what was at the owned path an
-instant before. Autobook hashes it. If it is not the content the batch was
-rendered from, a save got in: Autobook exchanges back, so the saved edit is at
+instant before. Autobook hashes it, and `fstat`s it: its mode, owner and
+group, and the absence of an ACL or extended attribute, must still be what
+the scratch file was given. If the user changed the owned file's permissions
+after the last check, the exchange would publish the older ones, so a
+metadata mismatch is handled like a content mismatch. If it is not the content the batch was
+rendered from, or its metadata differs, a save or a permission change got in: Autobook exchanges back, so the saved edit is at
 the owned path again, writes nothing and exits with code 4. Nothing is lost in
 either order.
 

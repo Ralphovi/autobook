@@ -174,8 +174,9 @@ one does not produce an error — it produces a wrong ledger.
   has no command that deletes a pre-image; the user deletes them by hand and
   then runs `autobook forget PATH`, which removes only the staging record and
   refuses while the file still exists.
-  Also: after the exchange, hash what was swapped out, and if
-  it is not the content the batch was rendered from, exchange back and write
+  Also: after the exchange, hash and `fstat` what was swapped out, and if
+  it is not the content the batch was rendered from, or its mode, owner,
+  group or ACL changed since the last check, exchange back and write
   nothing. Exchanging back is checked the same way; if the file was saved
   again in between, keep every version as a file, stop and report the
   conflict. **Never delete a version Autobook displaced.** A plain rename would silently overwrite a save that got in after
@@ -348,7 +349,11 @@ one does not produce an error — it produces a wrong ledger.
   failure.
 - **A missing entry is reported, never re-created silently.** A proposal ID
   that staging holds as applied and the ledger no longer contains was removed
-  by someone. Report it.
+  by someone. Report it. Apply reads a row's staged status before recording
+  the file's decisions, so such a row is excluded also when a saved review
+  file marks it `a` again. Every created row is searched again in its source
+  account at apply, so an entry booked by hand after the proposal queues the
+  row instead of being duplicated.
 - **Undo is narrow.** Undo removes an entry only if its `autobook-id` is the
   proposal ID of a staged row with disposition `create` or `create_split` in
   that batch **and** the entry is in the owned file — assert both before
