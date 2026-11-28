@@ -821,8 +821,9 @@ staging store. It holds everything steps 6 and 7 compare against: the
 operation (`apply` or `undo`, §10.5), the batch and its proposal IDs, the SHA-256 of every loaded file from step 1, the SHA-256 of
 the owned file after the replace, the owned file's previous content, the path
 of the temporary file (which holds the swapped-out content after the exchange),
-the errors the first load reported, and the first load's balance of every
-account. It is removed only after staging is updated.
+the errors the first load reported, the first load's balance of every
+account, and the owned file's mode, owner and group as last checked before
+the exchange. It is removed only after staging is updated.
 
 **Durability.** A journal that can be lost while the exchange survives is no
 journal, and a half-written journal blocks every command without telling
@@ -896,7 +897,9 @@ checked against. `apply` and `undo` recover as follows:
   **missing**, recovery can neither hash it nor exchange back: Autobook keeps
   the journal, marks nothing applied and exits with code 4, naming the missing
   path, as for any missing pre-image (§10.6). If it is
-  not the owned file's previous content, a save got in just before the
+  not the owned file's previous content, or its mode, owner, group or ACL
+  differs from what the journal recorded at the last check (the journal holds
+  that metadata), a save or a permission change got in just before the
   exchange: Autobook exchanges back, so the saved edit is at the owned path
   again, marks nothing applied and exits with code 4. Only if it is the
   previous content do steps 6 and 7 run — for an undo, its own checks
