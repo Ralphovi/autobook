@@ -819,8 +819,11 @@ check, changes nothing, staging included.
      after step 7 passes, and are left out of the candidate check below.
      Only lines in
      `balance_currency` dated on or before `closing_balance_date` are
-     considered, here and in the candidate check below: a later line, or one
-     in another currency, is not part of that balance. A line not yet applied
+     **subtracted**: a later line, or one in another currency, is not part of
+     that balance. The **candidate check** below is wider: it also covers
+     unapplied lines dated after the closing date (a July 1 line may already
+     be booked on June 30), because a candidate dated on or before the
+     closing date is in the ledger's balance either way. A line not yet applied
      can still be in the ledger already, for example a skipped line whose
      hand-written entry exists. So before subtracting, the writer runs each
      such line's match predicate (claims ignored), counting only candidates
@@ -1035,7 +1038,10 @@ validated by its own checks, never apply's:
   out, and no other file changed;
 - the balance of every account the removed entries posted to moved by exactly
   minus those postings, and no other account's balance moved;
-- every kept pre-image still has its recorded hash.
+- every kept pre-image still has its recorded hash;
+- last, immediately before staging is updated, the live ledger files and the
+  include set are re-hashed against the read-back snapshot, as for apply
+  (§10.3 step 7), in a live undo and in a recovered one alike.
 
 If they pass, the rows return to `pending`; otherwise the previous content is
 restored (exit 6) and the rows stay `applied`. Recovery of an undo never marks

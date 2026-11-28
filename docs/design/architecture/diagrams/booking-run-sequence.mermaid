@@ -42,12 +42,15 @@ sequenceDiagram
             L->>F: skip render, journal and exchange; load again, steps 6 and 7 against the fresh load
         else created rows
             L->>L: 4 render the entries
-            L->>F: 5 compare all hashes and kept pre-images (a change is exit 4), write the journal, checked atomic exchange with the owned file
+            L->>F: 5 compare all hashes and kept pre-images (a change is exit 4), write the journal and the temporary file, compare again, checked atomic exchange with the owned file
             L->>F: 6 read back, every created ID exactly once as approved, every matched entry still the only candidate
         end
         L->>L: 7 assert (no new load error, nothing else changed, balances moved by the postings written, kept pre-images unchanged)
-        alt read-back or an assertion fails, created rows
-            L->>F: exchange back to the previous content, keep the rejected batch as a pre-image
+        alt the owned file was saved after the exchange
+            L-->>A: conflict, the save stays at the owned path, every version kept
+            A-->>D: exit 4
+        else read-back or an assertion fails, owned file still the rendered batch
+            L->>F: checked exchange back to the previous content, keep the rejected batch as a pre-image
             L-->>A: nothing applied
             A-->>D: exit 6
         else a check fails, only matched rows
