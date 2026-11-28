@@ -679,10 +679,11 @@ check, changes nothing, staging included.
    posting of a created row to another of the user's own accounts — its
    destination or a split posting — is compared with the source posting of
    every other created row in the batch. If they are the two sides of one
-   transfer (the posting is in the other row's source account and that row
-   posts back to this row's source account, opposite amounts for that
-   posting, same currency, within the window; a fee in a split does not hide
-   it), only the canonical side stays and the other is queued as "pending
+   transfer — the posting is in the other row's source account with the
+   **same signed amount** as that row's source posting (A's entry posts
+   +100 to B; B's statement line is +100 in B), the other row posts back to
+   this row's source account, same currency, within the window; a fee in a
+   split does not hide it — only the canonical side stays and the other is queued as "pending
    transfer" — the balance-movement assertion would otherwise expect both
    writes and not see the duplicate.
    A row that fails is queued.
@@ -735,7 +736,11 @@ check, changes nothing, staging included.
    - Where the statement states a closing balance: the ledger's balance in
      `balance_currency` at the end of `closing_balance_date` (as staged; the
      OFX file is not needed at apply) equals it, minus the statement's lines not yet applied
-     (queued, out of scope, pending transfer, skipped). Only lines in
+     (queued, out of scope, pending transfer, skipped). The check is made
+     against the state after this batch: the batch's own rows, just verified
+     by the read-back, count as applied here although they are marked only
+     after step 7 passes, and are left out of the candidate check below.
+     Only lines in
      `balance_currency` dated on or before `closing_balance_date` are
      considered, here and in the candidate check below: a later line, or one
      in another currency, is not part of that balance. A line not yet applied
