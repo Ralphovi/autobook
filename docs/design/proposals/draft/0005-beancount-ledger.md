@@ -528,8 +528,10 @@ an orphaned row, and the strict parser aborts on anything else (exit 5):
   The hash prefix only selects the line; storing the hash for an entry
   Autobook created would escape the claim and dependent-undo checks, which
   know that entry by its proposal ID. The old value is kept in
-  `human_correction`, `match_source` becomes `rebound` and the row is
-  `approved`. A candidate line marked `m` under a row that is not orphaned
+  `human_correction`, `match_source` becomes `rebound`, `applied_entry` is
+  cleared in the same transaction, and the row is `approved`; `applied_entry`
+  is set again only after the read-back, so step 2 never drops the row on the
+  strength of the old entry. A candidate line marked `m` under a row that is not orphaned
   aborts the parse.
 - **`x` on the row** releases the claim and rejects the row: the line is not
   booked by Autobook, and the user books it by hand if it is real.
@@ -738,9 +740,6 @@ check, changes nothing, staging included.
        the rendered content: the batch cannot be validated, so it is rolled
        back by the checked exchange back of step 8 (exit 6). The other file's
        edit is untouched, since the restore changes only the owned file.
-   - Every kept pre-image, this batch's included, still has its recorded hash.
-     This is the last check before the rows are marked applied; a mismatch is
-     a save that got into an old file and rolls the batch back.
    - The balance of every account the batch wrote postings to moved by exactly
      the sum of those postings, and no other account's balance moved. A
      matched row writes no posting and moves nothing.
@@ -769,8 +768,18 @@ check, changes nothing, staging included.
      `closing_balance_date`; a line matched to a posting dated later (the
      match window reaches five days past the line) is counted with the lines
      not yet applied, since its posting is not in the balance on that date.
+     The opposite crossing counts too: a line dated after the closing date
+     whose matched posting is dated on or before it has that posting in the
+     balance, so the posting's amount is added to the expected balance. A
+     line dated after the closing date that is not yet applied but has a
+     candidate dated on or before it defers the assertion, as above.
      A statement's lines are read from `statement_lines`, so a line an
      earlier, overlapping statement staged is counted too.
+   - Every kept pre-image, this batch's included, still has its recorded hash.
+     Checked **last**, after every other assertion and immediately before
+     the staging commit, so a displaced save during the other checks is
+     caught. This is the last check before the rows are marked applied; a mismatch is
+     a save that got into an old file and rolls the batch back.
 8. **On any failure in 6 or 7,** restore the previous content — only if the
    file still holds exactly what step 5 wrote — exit 6, and mark nothing
    applied. A row is `applied` only after step 7 passes.

@@ -247,9 +247,6 @@ whole or not at all.
    - The owned file's hash is exactly the rendered content's (an edit inside
      the appended entries is caught, and kept as a conflict, exit code 4, never
      exchanged away), and no other file changed.
-   - Every kept pre-image, this batch's included, still has its recorded hash.
-     This is the last check before the rows are marked applied; a mismatch is
-     a save that got into an old file and rolls the batch back.
    - The balance of every account the batch wrote postings to moved by exactly
      the sum of those postings, and no other account's balance moved. A matched
      row writes no posting and moves nothing.
@@ -257,9 +254,16 @@ whole or not at all.
      staged balance currency at the end of the staged closing-balance date (the
      OFX `LEDGERBAL` as-of date, not necessarily the period end) equals it, minus the statement's lines not yet applied
      (queued, out of scope, pending transfer). A matched line counts as applied
-     only if its matched posting is dated on or before that date. A line not yet
+     only if its matched posting is dated on or before that date; a later line
+     matched to a posting dated by that date adds that posting to the expected
+     balance. A line not yet
      applied that has any match candidate may already be in the ledger; then the
      assertion is deferred for that statement and reported, not failed.
+   - Every kept pre-image, this batch's included, still has its recorded hash.
+     Checked **last**, after every other assertion and immediately before
+     the staging commit, so a displaced save during the other checks is
+     caught. This is the last check before the rows are marked applied; a mismatch is
+     a save that got into an old file and rolls the batch back.
 8. **On any failure in 6 or 7,** restore the previous content — only if the
    owned file still holds exactly what step 5 wrote — exit with code 6, and
    mark nothing applied.
