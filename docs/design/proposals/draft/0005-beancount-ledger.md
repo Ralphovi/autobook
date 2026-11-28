@@ -435,6 +435,15 @@ accounts appears in two statements. Booking both sides double-books.
   posting in both accounts — and is never booked again. An unmatched second
   side whose counterpart is pending is queued as "pending transfer", never
   classified.
+- **A booked side whose amount differs.** The exact search misses a first side
+  that was booked with another amount (A's −105 booked as +105 to B, B's later
+  line +98). So a line, and at apply every created row whose destination is
+  one of the user's own accounts, is also checked **amount-independently**
+  against booked entries: an entry Autobook created from another account's
+  line, with a posting in this line's account of the same sign, within the
+  window, not yet matched by any line of this account. Such an entry is a
+  possible first side, and the line is queued ("transfer amounts disagree")
+  for the user to resolve, never booked as a new transfer.
 - **PayPal** follows `paypal_mode`. `account` (default): PayPal is its own
   ledger account and its statement is imported; bank lines to PayPal are
   transfers, not expenses. `pass_through`: PayPal statements are never

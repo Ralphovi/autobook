@@ -217,7 +217,11 @@ one does not produce an error — it produces a wrong ledger.
   moved by exactly the sum of those postings, and no other balance moved; a
   matched row writes none and moves nothing. Where the statement states a closing balance, the ledger's balance
   on that date equals it minus the account's staged lines up to that date not
-  yet applied, from every admitted statement (a closing balance is cumulative). A line
+  yet applied, from every admitted statement (a closing balance is cumulative),
+  adjusted for matches whose posting and line fall on different sides of the
+  cutoff and for counterpart postings the bank has provably not booked — the
+  complete calculation is proposal 0005 §10.3 step 7, and it is the one to
+  implement. A line
   not yet applied that has any match candidate may already be in the ledger:
   then (counting only candidates dated by the closing date) the closing-balance assertion is deferred and reported, never failed
   and never satisfied by marking the line applied. Where the bank's balance
@@ -310,7 +314,10 @@ one does not produce an error — it produces a wrong ledger.
   sides are classified, and only the side whose proposed entry represents both
   movements goes on (configuration order breaks a tie); the other is queued as
   "pending transfer". A row with more than one eligible counterpart queues its
-  whole group. `transfers_pending` is recorded at proposal,
+  whole group. A line is also checked amount-independently against entries
+  Autobook already booked from another account's line into this account (same
+  sign, within the window, not yet matched here); one found queues the line
+  ("transfer amounts disagree") instead of booking a second transfer. `transfers_pending` is recorded at proposal,
   and apply queues the second of two created rows that are one transfer's two
   sides — compared by net movement per account and currency, so a split with
   a fee leg, or two legs to the same account, is caught. The owned path must be
