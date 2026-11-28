@@ -305,7 +305,11 @@ one does not produce an error — it produces a wrong ledger.
   sides — compared by net movement per account and currency, so a split with
   a fee leg, or two legs to the same account, is caught. The owned path must be
   a regular file, never a symlink (checked with `lstat` at preflight and again
-  before the exchange).
+  before the exchange). No include glob may match `.autobook-tmp-*` or
+  `.autobook-preimage-*` beside the owned file, and no include path may be
+  absolute (the snapshot copy could not redirect it); the preflight refuses
+  both. The exchange back checks mode, owner, group and ACL state as well as
+  content.
   The side kept is the one whose entry the other side's exact-amount match
   would find (the fee-bearing split, not the plain 100); configuration order
   decides only when both qualify, and neither qualifying queues both. The

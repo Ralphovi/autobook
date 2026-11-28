@@ -677,7 +677,10 @@ check, changes nothing, staging included.
    the live files. The live files and the include set are then compared with
    the snapshot; if any differs, a save got in, and the snapshot is taken
    again (up to three times, then exit 4). A save that is undone during the
-   load cannot slip through, because the parse never reads the live file. Every later load (the read-back, the fresh
+   load cannot slip through, because the parse never reads the live file.
+   An **absolute** `include` would bypass the copy, since Beancount resolves it
+   directly; v1 therefore refuses (exit 4) a ledger with an absolute include
+   path anywhere in the include tree, and the user writes it relative. Every later load (the read-back, the fresh
    load of a matched-only batch, recovery) is taken the same way. The
    **include set** is part of the snapshot: the list of files the load
    resolved (globs expanded) is recorded, compared before and after each
@@ -1077,7 +1080,9 @@ the file still exists, and removes only the staging record.
 
 **A displaced version is never deleted.** Exchanging back is itself checked:
 what the second exchange swaps out must be exactly the content the batch
-rendered. If it is not, the file was saved again in between, and Autobook stops
+rendered, with the mode, owner, group and ACL state the first exchange left
+(a permission change in between is not silently undone). If it is not, the
+file was saved or its permissions changed in between, and Autobook stops
 resolving: it keeps every version it holds as a file beside the journal, writes
 nothing further, marks nothing applied, and exits with code 4, naming the
 files. `autobook status` shows the conflict until the user resolves it. The
@@ -1086,6 +1091,16 @@ cases: Autobook may refuse, but it never discards a saved version.
 
 Editing the owned file while `apply` or `undo` runs is therefore not supported
 but is safe: the worst outcome is a refusal and a conflict to resolve by hand.
+
+**Autobook's own files never match an include.** Scratch files
+(`.autobook-tmp-…`) and pre-images (`.autobook-preimage-…`) sit beside the
+owned file, and Beancount's glob expansion can match dotfiles, so an
+`include "owned/*"` would pick them up: the include set would change under
+Autobook's own write, and a kept pre-image would be loaded as a second copy of
+the ledger. The preflight tests every include pattern against those two name
+patterns in the owned file's directory and refuses (exit 4) a ledger where
+either could match; `autobook init` says so when it prints the `include`
+line.
 
 **The owned path must be a regular file, not a symbolic link.** The reader
 would follow a link and hash its target, while the exchange swaps the link
