@@ -262,8 +262,8 @@ reason recorded and no line staged, if:
 - a line lacks a date, an amount or a currency, or an amount is not a whole
   number of cents;
 - the account ID is not in the configuration;
-- the statement's currency is not one the ledger account's `open` directive
-  declares;
+- the statement's currency, or **any line's** effective currency (a line may
+  carry its own), is not one the ledger account's `open` directive declares;
 - the lines do not add up to the statement's balances, where it states them;
 - its period overlaps an admitted statement in a way the overlap rule cannot
   resolve (proposal 0002 §3.4);
@@ -1109,10 +1109,19 @@ for a matched row, the predicate). A row that passes is marked `applied`,
 because the user, attending, has now accepted the ledger as it stands; a row
 that does not stays unapplied, with the difference listed, and its revision is
 incremented so no old review can book it. **For an undo**, the check is
-undo's: a row whose entry is absent is returned to `pending` exactly as a
-successful undo would (`applied_entry` cleared, a matched row's claim
-released to `released_entry`, revision incremented); a row whose entry is
-still present stays `applied`, and is listed. Then the journal is removed and its
+undo's, and only for **created** rows: one whose entry is absent is returned
+to `pending` exactly as a successful undo would (`applied_entry` cleared,
+revision incremented); one whose entry is still present stays `applied`, and
+is listed. A **matched** row's entry was never Autobook's to remove and stays
+in the ledger: it goes through the staging-only undo path (returned to
+`pending`, its claim released to `released_entry`) whenever the created part
+of the undo is accepted.
+
+`resolve` is crash-safe like a write: its row updates, the pre-image records
+and the journal's operation marked committed (`operations.committed_ts`) are
+one staging transaction, and only after it commits is the journal removed. A
+crash in between leaves a journal whose operation is committed, which the next
+run only cleans up. Then the journal is removed and its
 directory `fsync`ed. `--dry-run` lists what it would do.
 
 A row is therefore never `applied` without having passed the read-back and the
