@@ -1063,7 +1063,12 @@ checked against. `apply` and `undo` recover as follows:
   differs from what the journal recorded at the last check (the journal holds
   that metadata), a save or a permission change got in just before the
   exchange: Autobook exchanges back, so the saved edit is at the owned path
-  again, marks nothing applied and exits with code 4. Only if it is the
+  again, marks nothing applied and exits with code 4. Before that exchange
+  back, the **live file's** metadata is checked too: if the file now at the
+  owned path no longer has the metadata the writer gave it (the user changed
+  its permissions after the crash), Autobook does not exchange, keeps every
+  file and the journal, and exits with code 4 for the user to resolve; the
+  exchange back is itself checked as always (§10.6). Only if it is the
   previous content do steps 6 and 7 run — for an undo, its own checks
   (§10.5) —, against the journal's baseline and not against the ledger as
   it stands: the other files' hashes, the errors and the balances are the

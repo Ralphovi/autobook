@@ -356,7 +356,11 @@ one does not produce an error — it produces a wrong ledger.
   it holds the content it must: the owned file's previous content when the
   exchange was kept, or the batch's rendered content when the exchange never
   happened or was undone. Anything else is a displaced save: keep the journal
-  and refuse. The final pre-image name is given only to a complete, fsynced
+  and refuse. One exception: if the owned file has the *before* hash, no file
+  is at the pre-image path and the journal was never marked *published*, the
+  crash came before the pre-image existed and there is nothing to record. A
+  missing pre-image after *published* is a lost version: keep the journal and
+  refuse. The final pre-image name is given only to a complete, fsynced
   file (write a scratch file, then rename), so a crash never leaves a partial
   file under that name.
 - **Preflight before decisions.** `apply` takes the lock, recovers any
