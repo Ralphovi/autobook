@@ -155,7 +155,7 @@ one does not produce an error — it produces a wrong ledger.
   admission check (parse, a line without date, amount or currency, an unknown
   account ID, a currency the ledger account does not declare, lines that do not
   add up to the stated balances, an overlap the rule cannot resolve, a repeated bank ID whose date, amount or
-  currency differs from the staged line) is
+  currency differs from the staged line, a bank ID twice in one statement) is
   rejected whole, its reason recorded, and no line of it is staged.
 - **A batch is booked whole or not at all.** A failed read-back or assertion
   restores the previous content of the owned file and marks nothing applied.
@@ -364,6 +364,9 @@ one does not produce an error — it produces a wrong ledger.
 - **A refusal writes nothing.** The batch gate, the version gate and an
   unwritable ledger leave every ledger file byte-identical. Proposals stay
   pending. Exit with the documented code and the reason; the driver notifies.
+  The version gate is checked at `propose` and again at `decide` and `apply`
+  before any decision is recorded, so a review generated before a rule or
+  model change is never booked.
 - **Autobook does not second-guess a well-formed statement.** It cannot know
   how an OFX file was produced. It checks the file for consistency and its own
   work for correctness, and it never "repairs" a statement.
@@ -474,7 +477,9 @@ hands over OFX files.
 - **Approval is the saved review file.** The pipeline writes the review file
   with rows that passed the gates pre-marked `a` and every other row `?`.
   Saving the file is the user's approval of every row marked `a` in it. Nothing
-  reaches the ledger that was not marked `a` in the saved review file, with
+  reaches the ledger that was not marked `a` in the review file being applied
+  (an approval an earlier `decide` stored is not enough: `apply --from FILE`
+  books exactly the rows marked `a` in FILE), with
   exactly the account, amount, currency and date shown there. Every row shows
   its currency, and a split row shows every posting it will book, with the sign
   it gets in the ledger, each on a line carrying the row's ID and a posting

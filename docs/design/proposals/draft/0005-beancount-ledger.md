@@ -266,8 +266,8 @@ reason recorded and no line staged, if:
 - the lines do not add up to the statement's balances, where it states them;
 - its period overlaps an admitted statement in a way the overlap rule cannot
   resolve (proposal 0002 §3.4);
-- a line repeats a known bank ID with a different date, amount or currency
-  (see *Dedup*).
+- a line repeats a known bank ID with a different date, amount or currency,
+  or a bank ID occurs twice in the statement (see *Dedup*).
 
 Every decision is recorded in `statements` with the file's checksum. Handing
 over a file that was already **admitted** changes nothing. A file that was
@@ -276,7 +276,9 @@ reason outside the file (an account ID missing from the configuration, an
 account not yet opened in the ledger) is admitted once that is fixed.
 
 **Dedup.** A line is identified within its source account by the bank's ID
-when the configuration says the IDs are bank-supplied. A later statement that
+when the configuration says the IDs are bank-supplied. A bank ID that occurs
+twice **within one statement** rejects the statement whole ("duplicate bank ID
+in the statement"): the two lines would collide on one staging key. A later statement that
 repeats a bank ID reuses its proposal only if the date, amount and currency
 agree; a different memo is recorded but is not a conflict. If any of the three
 differs, the bank changed a fact, and the whole statement is rejected
@@ -584,7 +586,8 @@ Recorded per successful trial: rule-file hash, steering-document version,
 model ID and configuration, kNN index version, normaliser version, the
 producer strings of the statements used, the Beancount version, and the items
 proposal 0002 adds. Production refuses (exit 3) when the current tuple differs
-from the last validated one. A changed producer string means a converter
+from the last validated one — at `propose`, and again at `decide` and `apply`
+before any decision is recorded (§10.3). A changed producer string means a converter
 plugin was updated; that can change every memo without any Autobook code
 changing.
 
@@ -639,8 +642,16 @@ with other tools and with Autobook's own undo. They get a specification under
 
 `apply` first takes the writer lock (§10.6), then recovers any journal and
 checks the kept pre-images (§10.4, §10.6), and only then parses the review file
-and records decisions. It holds the lock until staging is updated after step 7
-or 8. A run that cannot take the lock, or refuses in recovery or the pre-image
+and records decisions. Before it records any decision it checks the
+**version gate** (§9.3) again: the current version tuple must equal the last
+validated one, and the classifier and normaliser versions every row in the
+file was proposed under must be current; otherwise exit 3, nothing recorded —
+a review generated before a rule or model change is re-proposed, not booked.
+**The batch is exactly the rows marked `a` in this file.** A row that an
+earlier `decide` left `approved` but that this file omits or no longer marks
+`a` is not booked, and returns to `pending`; a stored approval is never a
+substitute for the file being applied. It holds the lock until staging is
+updated after step 7 or 8. A run that cannot take the lock, or refuses in recovery or the pre-image
 check, changes nothing, staging included.
 `decide` takes the same lock, and refuses while a batch journal exists
 (§10.4).
