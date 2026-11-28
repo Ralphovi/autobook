@@ -248,7 +248,9 @@ Account paths are lists of components.
 
 TOML under `$XDG_CONFIG_HOME/autobook/`; data under `$XDG_DATA_HOME/autobook/`.
 It names the main ledger file and the owned file, and per source: the OFX
-account ID, the ledger account, whether the line IDs are bank-supplied or
+account identity — the account ID **qualified by the institution** (`BANKID`
+and `BRANCHID` for a bank account, the account type, or the card account for
+a credit card), since an `ACCTID` alone is not unique across banks — the ledger account, whether the line IDs are bank-supplied or
 synthesised, the normalisation profile, and `paypal_mode` where relevant.
 Autobook cannot learn any of these from the file. Credentials are never in the
 configuration; they go in the Secret Service.
@@ -261,10 +263,17 @@ reason recorded and no line staged, if:
 - the file does not parse as OFX;
 - a line lacks a date, an amount or a currency, or an amount is not a whole
   number of cents;
-- the account ID is not in the configuration;
+- the qualified account identity is not in the configuration, or matches more
+  than one configured source;
 - the statement's currency, or **any line's** effective currency (a line may
   carry its own), is not one the ledger account's `open` directive declares;
-- the lines do not add up to the statement's balances, where it states them;
+- the lines do not add up to the statement's balances, where it states them:
+  the lines in the balance currency dated after the opening balance's as-of
+  date and up to the closing balance's (`DTASOF`) must sum exactly to closing
+  minus opening. Where the file does not state the as-of dates, the period
+  bounds are used; where the interval cannot be established at all (a
+  balance without any date, or an intraday as-of time on a day with lines),
+  the check is recorded as not possible rather than failed;
 - its period overlaps an admitted statement in a way the overlap rule cannot
   resolve (proposal 0002 §3.4);
 - for an account whose IDs the configuration declares **bank-supplied**: a
@@ -885,7 +894,10 @@ check, changes nothing, staging included.
      closing date is in the ledger's balance either way. A line not yet applied
      can still be in the ledger already, for example a skipped line whose
      hand-written entry exists. So before subtracting, the writer runs each
-     such line's match predicate (claims ignored) — only for lines in
+     such line's match predicate — ignoring only a claim by the line itself,
+     but **excluding entries already accounted for** by another line of this
+     account (claimed by it, or created and just verified in this read-back),
+     since such an entry cannot also represent this line — only for lines in
      `balance_currency`, since a posting in another currency cannot affect
      this balance — counting only candidates
      dated on or before `closing_balance_date`, since a later posting cannot
@@ -1107,8 +1119,13 @@ batch's rows is checked against the current ledger as the read-back would
 (its ID exactly once, the approved date, accounts, amounts and currencies;
 for a matched row, the predicate). A row that passes is marked `applied`,
 because the user, attending, has now accepted the ledger as it stands; a row
-that does not stays unapplied, with the difference listed, and its revision is
-incremented so no old review can book it. **For an undo**, the check is
+that does not becomes **`unverified`**: its entry is present but not
+validated, the difference is listed, and its revision is incremented so no old
+review can book it. Step 2 of apply never drops an `unverified` row on its
+ID's presence; `autobook resolve` run again checks it against the ledger as it
+stands and marks it `applied` once it passes (after the user fixed the entry),
+or `--reject ID` records it `rejected` and leaves the entry as the user's,
+never creating a second one. **For an undo**, the check is
 undo's, and only for **created** rows: one whose entry is absent is returned
 to `pending` exactly as a successful undo would (`applied_entry` cleared,
 revision incremented); one whose entry is still present stays `applied`, and
@@ -1330,7 +1347,8 @@ proposals(
   match_source,                                -- search | rebound (the user chose it, §8.2)
   revision,                                    -- incremented on every re-proposal of the row
   released_entry,                              -- the matched_entry an undo released; audit only, claims nothing
-  status,                                      -- pending|approved|skipped|rejected|applied
+  status,                                      -- pending|approved|skipped|rejected|applied|unverified
+                                               -- unverified: its entry is present but failed `resolve`
                                                -- skipped: `s` in the review file; releases the
                                                -- row's claim, and the row returns as `?` next time
   applied_entry,                               -- set only after read-back and assertions pass:
