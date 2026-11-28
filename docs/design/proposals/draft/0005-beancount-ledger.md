@@ -496,7 +496,11 @@ an orphaned row, and the strict parser aborts on anything else (exit 5):
   writer lock, runs the predicate again on the loaded ledger: the chosen entry
   must still pass it, and its hash prefix must name exactly one candidate.
   Otherwise the parse aborts (exit 5) and nothing is recorded. On success
-  `matched_entry` becomes that entry's content hash, the old hash is kept in
+  `matched_entry` becomes that entry's canonical identity, the same as for an
+  ordinary match: its `autobook-id` if it has one, otherwise its content hash.
+  The hash prefix only selects the line; storing the hash for an entry
+  Autobook created would escape the claim and dependent-undo checks, which
+  know that entry by its proposal ID. The old value is kept in
   `human_correction`, `match_source` becomes `rebound` and the row is
   `approved`. A candidate line marked `m` under a row that is not orphaned
   aborts the parse.
@@ -673,7 +677,15 @@ check, changes nothing, staging included.
    - Where the statement states a closing balance: the ledger's balance in
      `balance_currency` at the end of `closing_balance_date` (as staged; the
      OFX file is not needed at apply) equals it, minus the statement's lines not yet applied
-     (queued, out of scope, pending transfer). A matched line counts as
+     (queued, out of scope, pending transfer, skipped). A line not yet applied
+     can still be in the ledger already, for example a skipped line whose
+     hand-written entry exists. So before subtracting, the writer runs each
+     such line's match predicate (claims ignored): a line with no candidate
+     is subtracted; a line with any candidate makes the statement's
+     representation ambiguous, and the closing-balance assertion is
+     **deferred** for that statement — reported in `apply-out` and by
+     `autobook status`, never failed and never satisfied by marking the line
+     applied. Every other assertion still runs. A matched line counts as
      applied only when its matched posting is dated on or before
      `closing_balance_date`; a line matched to a posting dated later (the
      match window reaches five days past the line) is counted with the lines
@@ -736,6 +748,11 @@ the wrong group. Before the exchange the writer checks, with `fstat` on both
 open files, that the scratch file has the owned file's mode, owner and group;
 the owned file must belong to the running user. An owned file with a POSIX ACL or other
 extended attributes is refused (exit 4) rather than silently stripped of them.
+The scratch file is checked too, before its mode is widened: a default ACL on
+the ledger's directory is inherited by new files, and `fchmod` would then make
+its named-user and named-group entries effective while `fstat` still shows the
+expected mode. If the scratch file carries any ACL or extended attribute, the
+writer removes it and refuses (exit 4); it never exchanges such a file in.
 The journal, which holds the previous content, and the staging store are
 created `0600` in a directory of mode `0700`. A pre-image keeps the mode of
 the inode it is, the owned file's old one. `autobook init` creates the owned
@@ -1022,8 +1039,9 @@ gates are pre-marked `a`; everything else is `?`.
 - **Parse by ID, never by position.** Reordering or deleting rows must not
   misalign anything. An unknown ID is an error.
 - **Strict parser.** An unknown status, an account that is not open in the
-  ledger, or an amount or currency that differs from staging aborts the whole file with a
-  line number (exit 5) and applies nothing. So does a destination account, or
+  ledger, or a date, amount or currency that differs from staging aborts the whole file with a
+  line number (exit 5) and applies nothing. The date is a statement fact, like
+  the amount: it is shown, never edited. So does a destination account, or
   a split's destination posting, equal to the row's source account. A
   classifier (a rule, kNN or the LLM) that proposes the source account as the
   destination has its row queued, never pre-marked.

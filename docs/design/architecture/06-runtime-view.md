@@ -256,7 +256,9 @@ whole or not at all.
      staged balance currency at the end of the staged closing-balance date (the
      OFX `LEDGERBAL` as-of date, not necessarily the period end) equals it, minus the statement's lines not yet applied
      (queued, out of scope, pending transfer). A matched line counts as applied
-     only if its matched posting is dated on or before that date.
+     only if its matched posting is dated on or before that date. A line not yet
+     applied that has any match candidate may already be in the ledger; then the
+     assertion is deferred for that statement and reported, not failed.
 8. **On any failure in 6 or 7,** restore the previous content — only if the
    owned file still holds exactly what step 5 wrote — exit with code 6, and
    mark nothing applied.

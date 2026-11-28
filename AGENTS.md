@@ -199,7 +199,10 @@ one does not produce an error — it produces a wrong ledger.
   other file changed. The balance of every account the batch wrote postings to
   moved by exactly the sum of those postings, and no other balance moved; a
   matched row writes none and moves nothing. Where the statement states a closing balance, the ledger's balance
-  on that date equals it minus the statement's lines not yet applied.
+  on that date equals it minus the statement's lines not yet applied. A line
+  not yet applied that has any match candidate may already be in the ledger:
+  then the closing-balance assertion is deferred and reported, never failed
+  and never satisfied by marking the line applied.
 - **Money is exact.** Amounts are `Decimal` built from **integer cents** and
   printed with exactly two decimals. Never floats, in any code path, including
   tests and fixtures; the hazard is `Decimal(float)`, which accepts a float
@@ -263,7 +266,9 @@ one does not produce an error — it produces a wrong ledger.
   `m` on exactly one listed candidate (an entry that passes the full match
   predicate, identified by its content-hash prefix) rebinds the row after
   `decide` re-runs the predicate under the lock; `x` on the row releases the
-  claim and rejects it. Never rebind to an entry the search would not match. A
+  claim and rejects it. Never rebind to an entry the search would not match.
+  A rebind stores the entry's canonical identity, as an ordinary match does
+  (`autobook-id` if present, else content hash); the hash prefix only selects. A
   rebound row (`match_source = rebound`) must pass the predicate, unclaimed,
   at apply and in the read-back, rather than be the only candidate.
 - **A created row never posts back to its source account.** Its destination,
@@ -308,6 +313,8 @@ one does not produce an error — it produces a wrong ledger.
   file's inode at the owned path, so create it with `O_CREAT | O_EXCL |
   O_NOFOLLOW`, mode `0600`, then `fchmod` it to the owned file's mode, and
   `fchown` it to the owned file's group (refuse if the user is not a member),
+  check the scratch file for an inherited ACL or extended attribute before
+  widening its mode (a default ACL on the directory; refuse if present),
   and check mode, owner and group with `fstat` before the exchange; the umask must never
   decide who reads the ledger. Refuse (exit 4) an owned file not owned by the
   running user or carrying an ACL or extended attributes. The journal (it holds
@@ -460,7 +467,7 @@ hands over OFX files.
 - **Parse by ID, never by position.** Reordering, deleting, or sorting the review
   file must not misalign rows. An unknown ID is an error, not a guess.
 - **Strict parser, fail loudly.** Unknown status char, unparseable account, or
-  amount or currency mismatch aborts the whole batch with a line number and applies nothing.
+  date, amount or currency mismatch aborts the whole batch with a line number and applies nothing.
   Validate accounts against the live CoA at parse time so a typo stops the run
   instead of reaching the writer.
 
