@@ -306,9 +306,11 @@ one does not produce an error — it produces a wrong ledger.
   entry is edited.
 - **A transfer is booked once.** Every transfer row goes through a
   source-account `match_existing` search *before* classification. When both
-  sides are staged before either is booked, the correlator pairs them and only
-  the canonical side (first in the configuration) is classified; the other is
-  queued as "pending transfer". `transfers_pending` is recorded at proposal,
+  sides are staged before either is booked, the correlator pairs them, both
+  sides are classified, and only the side whose proposed entry represents both
+  movements goes on (configuration order breaks a tie); the other is queued as
+  "pending transfer". A row with more than one eligible counterpart queues its
+  whole group. `transfers_pending` is recorded at proposal,
   and apply queues the second of two created rows that are one transfer's two
   sides — compared by net movement per account and currency, so a split with
   a fee leg, or two legs to the same account, is caught. The owned path must be

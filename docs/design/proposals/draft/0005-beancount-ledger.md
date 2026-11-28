@@ -541,8 +541,13 @@ an orphaned row, and the strict parser aborts on anything else (exit 5):
   `human_correction`, `match_source` becomes `rebound`, `applied_entry` is
   cleared in the same transaction, and the row is `approved`; `applied_entry`
   is set again only after the read-back, so step 2 never drops the row on the
-  strength of the old entry. A candidate line marked `m` under a row that is not orphaned
-  aborts the parse.
+  strength of the old entry. The candidate line stays in the review file
+  regenerated from it. An `m` under a row that is not orphaned aborts the parse
+  — except under a row already rebound (`match_source = rebound`, not yet
+  applied) where the marked candidate's hash prefix is the recorded entry:
+  that is the same rebind seen again, for example when `apply --from` runs on
+  the file `decide` already recorded, and it counts as that row's approval.
+  A different candidate under a rebound row aborts the parse.
 - **`x` on the row** releases the claim and rejects the row: the line is not
   booked by Autobook, and the user books it by hand if it is real.
 
@@ -738,7 +743,12 @@ check, changes nothing, staging included.
    user's own accounts (a transfer with a fee, for example): the row's split
    postings are **summed per account and currency** first (+60 and +40 to B
    are one +100 movement), that net movement is searched for in its account,
-   and a candidate queues the whole row. **Batch-level:** every
+   and a candidate queues the whole row. **Ambiguity first:** before any
+   side is chosen, every created row's eligible transfer counterparts are
+   counted, in the batch and among staged rows, with the review's edits
+   applied. A row with more than one — two equal debits from A to B and one
+   credit from B to A — queues the whole group ("ambiguous transfer"); only
+   one-to-one pairs go on to the choice below. **Batch-level:** every
    created row's **net movement in each other account of the user's** — its
    destination or its split postings, summed per account and currency, so
    +60 and +40 to B count as +100 — is compared with the source posting of
@@ -947,7 +957,9 @@ rename);
 write the rendered content to a scratch file (`.autobook-tmp-<ULID>`) and
 `fsync` it; rename it to its final pre-image name, which the journal records,
 and `fsync` the owned file's directory — so the final name only ever holds the
-complete rendered content; exchange; `fsync` the owned file's directory again.
+complete rendered content; then mark the journal **published** (rewritten
+under a scratch name and renamed, like the journal itself), so recovery knows
+the pre-image must exist from here on; exchange; `fsync` the owned file's directory again.
 An exchange back is made durable the same way — the directory is `fsync`ed
 before the pre-image is recorded or the journal removed.
 
@@ -1000,8 +1012,12 @@ checked against. `apply` and `undo` recover as follows:
   happened, or the batch was exchanged back after a failed check. The owned
   file's directory is `fsync`ed first, since an exchange back may not yet be
   durable if the crash came right after it. Before the
-  journal is discarded, the file at the journal's pre-image path, if it
-  exists, is checked: if it holds exactly the content the batch rendered (the
+  journal is discarded, the file at the journal's pre-image path is checked.
+  If it is missing and the journal is not yet marked *published*, the crash
+  came while the scratch file was being prepared and there is nothing to
+  keep. If it is missing although the journal is *published*, a version
+  Autobook was keeping is gone: the journal is kept and the run exits with
+  code 4, as for any missing pre-image. If it exists, it is checked: if it holds exactly the content the batch rendered (the
   journal's *after* hash) **and** still has the mode, owner, group and ACL
   state the writer gave it, it is recorded in staging (`kind = rejected`). If
   it holds anything else, or its metadata changed, an editor saved into it or
