@@ -192,8 +192,8 @@ one does not produce an error — it produces a wrong ledger.
 - **Read back, then report.** After the replace, load the ledger again. A row
   is reported applied — in `apply-out` and as `applied` in staging — only after
   the read-back and every assertion have passed. For a created row the
-  read-back finds its proposal ID exactly once with the approved date, accounts
-  and amounts. A matched row wrote nothing, so its ID is not looked for: its
+  read-back finds its proposal ID exactly once with the approved date, accounts,
+  and each posting's amount and currency. A matched row wrote nothing, so its ID is not looked for: its
   search, run again, must find exactly one candidate and it must be the recorded
   entry. The search runs at proposal, again at apply, and again in the
   read-back.
@@ -206,7 +206,8 @@ one does not produce an error — it produces a wrong ledger.
   (exit 6). The balance of every account the batch wrote postings to
   moved by exactly the sum of those postings, and no other balance moved; a
   matched row writes none and moves nothing. Where the statement states a closing balance, the ledger's balance
-  on that date equals it minus the statement's lines not yet applied. A line
+  on that date equals it minus the account's staged lines up to that date not
+  yet applied, from every admitted statement (a closing balance is cumulative). A line
   not yet applied that has any match candidate may already be in the ledger:
   then (counting only candidates dated by the closing date) the closing-balance assertion is deferred and reported, never failed
   and never satisfied by marking the line applied.
@@ -300,7 +301,9 @@ one does not produce an error — it produces a wrong ledger.
   decides only when both qualify, and neither qualifying queues both. Apply also searches again, in both accounts against the live ledger,
   for every created row whose destination, or any split posting, is one of
   the user's own accounts (a split posting with its own amount), and queues it
-  if a search finds a candidate. The second
+  if a search finds a candidate This screen ignores claims: an
+  entry already claimed in that account still queues the row, though it never
+  becomes the row's match. The second
   side of a transfer whose first side was booked in an earlier batch resolves
   to the entry the first side created. An unmatched second side whose
   counterpart is in `transfers_pending`, with the same amount and currency, is queued as "pending transfer", never

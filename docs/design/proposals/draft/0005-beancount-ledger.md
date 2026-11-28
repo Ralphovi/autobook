@@ -693,7 +693,10 @@ check, changes nothing, staging included.
    in its source account and in its destination account, against the ledger
    as loaded in step 1: if either search finds a candidate, the transfer may
    already be booked, and the row is queued ("needs a match decision"), never
-   created. The same holds for **every split posting** to another of the
+   created. This duplicate screen **ignores claims**: an entry already
+   claimed for the searched account (a transfer whose other side booked it)
+   still counts as a candidate here, because it may be this very transfer; it
+   only queues the row and never becomes the row's match. The same holds for **every split posting** to another of the
    user's own accounts (a transfer with a fee, for example): that posting is
    searched for with its own amount and currency in its account, and a
    candidate queues the whole row. **Batch-level:** every
@@ -733,7 +736,8 @@ check, changes nothing, staging included.
    until step 7 has passed and staging is updated.
 6. **Read back.** Load the ledger again.
    - Every **created** row's proposal ID appears exactly once, with the
-     approved date, accounts and amounts, and with exactly one posting in its
+     approved date, accounts, and amounts with their currencies (each posting's
+     amount and currency compared together), and with exactly one posting in its
      source account: the source posting, carrying the statement amount.
    - A **matched** row wrote nothing, so its ID is not looked for. Its
      search, run again on the reloaded ledger, must still find exactly one
@@ -759,7 +763,7 @@ check, changes nothing, staging included.
      matched row writes no posting and moves nothing.
    - Where the statement states a closing balance: the ledger's balance in
      `balance_currency` at the end of `closing_balance_date` (as staged; the
-     OFX file is not needed at apply) equals it, minus the statement's lines not yet applied
+     OFX file is not needed at apply) equals it, minus the lines not yet applied
      (queued, out of scope, pending transfer, skipped). The check is made
      against the state after this batch: the batch's own rows, just verified
      by the read-back, count as applied here although they are marked only
@@ -787,8 +791,12 @@ check, changes nothing, staging included.
      balance, so the posting's amount is added to the expected balance. A
      line dated after the closing date that is not yet applied but has a
      candidate dated on or before it defers the assertion, as above.
-     A statement's lines are read from `statement_lines`, so a line an
-     earlier, overlapping statement staged is counted too.
+     A closing balance is cumulative, so "the lines" are **every staged line
+     of that source account** up to the closing date, from this statement and
+     from every earlier admitted one: a January line still pending is in
+     February's closing balance but not in the ledger. They are read from
+     `statement_lines`, so a line an overlapping statement staged is counted
+     once.
    - Every kept pre-image, this batch's included, still has its recorded hash.
      Checked **last**, after every other assertion and immediately before
      the staging commit, so a displaced save during the other checks is
