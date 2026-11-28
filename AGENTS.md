@@ -293,7 +293,7 @@ one does not produce an error — it produces a wrong ledger.
   the canonical side (first in the configuration) is classified; the other is
   queued as "pending transfer". `transfers_pending` is recorded at proposal,
   and apply queues the second of two created rows that are one transfer's two
-  sides. Apply also searches again, in both accounts against the live ledger,
+  sides — compared posting by posting, so a split with a fee leg is caught. Apply also searches again, in both accounts against the live ledger,
   for every created row whose destination, or any split posting, is one of
   the user's own accounts (a split posting with its own amount), and queues it
   if a search finds a candidate. The second

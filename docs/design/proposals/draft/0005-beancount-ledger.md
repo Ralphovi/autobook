@@ -675,10 +675,14 @@ check, changes nothing, staging included.
    created. The same holds for **every split posting** to another of the
    user's own accounts (a transfer with a fee, for example): that posting is
    searched for with its own amount and currency in its account, and a
-   candidate queues the whole row. **Batch-level:** if
-   two created rows in the batch are the two sides of one transfer (each posts
-   to the other's source account, opposite amounts, same currency, within the
-   window), only the canonical side stays and the other is queued as "pending
+   candidate queues the whole row. **Batch-level:** every
+   posting of a created row to another of the user's own accounts — its
+   destination or a split posting — is compared with the source posting of
+   every other created row in the batch. If they are the two sides of one
+   transfer (the posting is in the other row's source account and that row
+   posts back to this row's source account, opposite amounts for that
+   posting, same currency, within the window; a fee in a split does not hide
+   it), only the canonical side stays and the other is queued as "pending
    transfer" — the balance-movement assertion would otherwise expect both
    writes and not see the duplicate.
    A row that fails is queued.
@@ -845,7 +849,9 @@ checked against. `apply` and `undo` recover as follows:
   does not record as committed.
 
 - The owned file has the journal's *before* hash: either the exchange never
-  happened, or the batch was exchanged back after a failed check. Before the
+  happened, or the batch was exchanged back after a failed check. The owned
+  file's directory is `fsync`ed first, since an exchange back may not yet be
+  durable if the crash came right after it. Before the
   journal is discarded, the file at the journal's pre-image path, if it
   exists, is checked: if it holds exactly the content the batch rendered (the
   journal's *after* hash), it is recorded in staging (`kind = rejected`). If it
