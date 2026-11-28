@@ -234,7 +234,8 @@ one does not produce an error — it produces a wrong ledger.
   account, for a posting with the row's amount **and currency** (an account
   may hold several currencies; the number alone is not a match), and its candidates are entries not already claimed **for that
   source account**: an entry is claimed for an account when a staged row of
-  that account created or matched it. An `autobook-id` alone does not exclude
+  that account created it (its proposal ID, once applied) or matched it
+  (`matched_entry`); the claim lookup covers both. An `autobook-id` alone does not exclude
   an entry, or the second side of a transfer could never match the entry the
   first side created. An ambiguous or
   absent match is queued; never guess between candidates. Do not filter on

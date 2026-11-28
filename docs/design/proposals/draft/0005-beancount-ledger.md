@@ -464,9 +464,12 @@ moves). An entry Autobook created is identified by its `autobook-id` instead.
 when **another** staged row of that account that is still `pending`,
 `approved` or `applied` refers to it — a row's own `matched_entry` never
 excludes its own candidate, and a `rejected` or `skipped` row releases its claim: the row that created
-it, or a row that matched it — through `matched_entry` from proposal on, not
-only through a validated `applied_entry`, so two pending rows cannot select the
-same entry. This is what lets a transfer resolve. The first
+it, through its proposal ID (the entry's `autobook-id`) once it is `applied`,
+or a row that matched it, through `matched_entry` from proposal on, not
+only through a validated `applied_entry`, so two pending rows cannot select
+the same entry. The claim lookup covers both: `matched_entry` alone would
+leave a created entry unclaimed in its own account, and a second payment of
+the same amount there would match it. This is what lets a transfer resolve. The first
 side, booked from account A, creates an entry with a posting in A and one in
 B. That entry is claimed for A and not for B, so the second side's search in B
 finds it, matches it once, and claims it for B. An `autobook-id` alone does
@@ -687,7 +690,10 @@ check, changes nothing, staging included.
    - Where the statement states a closing balance: the ledger's balance in
      `balance_currency` at the end of `closing_balance_date` (as staged; the
      OFX file is not needed at apply) equals it, minus the statement's lines not yet applied
-     (queued, out of scope, pending transfer, skipped). A line not yet applied
+     (queued, out of scope, pending transfer, skipped). Only lines in
+     `balance_currency` dated on or before `closing_balance_date` are
+     considered, here and in the candidate check below: a later line, or one
+     in another currency, is not part of that balance. A line not yet applied
      can still be in the ledger already, for example a skipped line whose
      hand-written entry exists. So before subtracting, the writer runs each
      such line's match predicate (claims ignored), counting only candidates
@@ -807,6 +813,9 @@ checked against. `apply` and `undo` recover as follows:
   resolve. It is never deleted. Then the batch is applied from the start.
 - It has the *after* hash: the batch was written and never validated. First
   the swapped-out file at the journal's temporary path is checked. If it is
+  **missing**, recovery can neither hash it nor exchange back: Autobook keeps
+  the journal, marks nothing applied and exits with code 4, naming the missing
+  path, as for any missing pre-image (§10.6). If it is
   not the owned file's previous content, a save got in just before the
   exchange: Autobook exchanges back, so the saved edit is at the owned path
   again, marks nothing applied and exits with code 4. Only if it is the
@@ -1145,7 +1154,8 @@ does not guess.
 - transaction and posting counts match, per year;
 - every account's balance per commodity matches exactly at each year end and
   at the conversion date; these are written into the new ledger as `balance`
-  directives;
+  directives dated the **following day**, because Beancount checks a
+  `balance` directive at the start of its date, before that day's postings;
 - `bean-check` reports no error;
 - the rename table is one-to-one and every exception is listed;
 - each converted transaction carries its GnuCash GUID as metadata, and each
